@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from synchro_jump.optimization.force_profile import PlatformForceProfile
 
 
@@ -19,6 +21,6 @@ def test_force_profile_halves_over_final_taper() -> None:
 
     profile = PlatformForceProfile(peak_force_newtons=1200.0)
 
-    assert profile.force_at(1.85) == 900.0
-    assert profile.force_at(2.0) == 600.0
-    assert profile.force_at(3.0) == 600.0
+    assert profile.force_at(1.85) == pytest.approx(900.0)
+    assert profile.force_at(2.0) == pytest.approx(600.0)
+    assert profile.force_at(3.0) == pytest.approx(600.0)
