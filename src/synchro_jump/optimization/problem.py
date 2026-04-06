@@ -1,0 +1,57 @@
+"""Problem settings for the planar vertical jump OCP."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+def discrete_force_slider_values() -> tuple[int, ...]:
+    """Return the admissible platform-force slider values."""
+
+    return tuple(range(900, 1301, 50))
+
+
+def discrete_mass_slider_values() -> tuple[int, ...]:
+    """Return the admissible athlete-mass slider values."""
+
+    return (40, 45, 50, 55)
+
+
+@dataclass(frozen=True)
+class VerticalJumpOcpSettings:
+    """Static settings for the first version of the jump OCP."""
+
+    platform_mass_kg: float = 80.0
+    athlete_height_m: float = 1.60
+    athlete_mass_kg: float = 50.0
+    tau_min_nm: float = -500.0
+    tau_max_nm: float = 500.0
+    final_time_upper_bound_s: float = 2.0
+    final_time_lower_bound_s: float = 0.2
+    n_shooting: int = 100
+    rk4_substeps: int = 4
+    initial_joint_flexion_deg: float = 100.0
+    force_slider_values_newtons: tuple[int, ...] = field(default_factory=discrete_force_slider_values)
+    mass_slider_values_kg: tuple[int, ...] = field(default_factory=discrete_mass_slider_values)
+
+    def __post_init__(self) -> None:
+        """Validate the OCP settings."""
+
+        if self.platform_mass_kg <= 0.0:
+            raise ValueError("platform_mass_kg must be strictly positive")
+        if self.athlete_height_m <= 0.0:
+            raise ValueError("athlete_height_m must be strictly positive")
+        if self.athlete_mass_kg not in self.mass_slider_values_kg:
+            raise ValueError("athlete_mass_kg must match one slider value")
+        if self.tau_min_nm >= self.tau_max_nm:
+            raise ValueError("tau_min_nm must stay below tau_max_nm")
+        if self.final_time_lower_bound_s <= 0.0:
+            raise ValueError("final_time_lower_bound_s must be strictly positive")
+        if self.final_time_lower_bound_s >= self.final_time_upper_bound_s:
+            raise ValueError("final_time_lower_bound_s must stay below final_time_upper_bound_s")
+        if self.n_shooting <= 0:
+            raise ValueError("n_shooting must be strictly positive")
+        if self.rk4_substeps <= 0:
+            raise ValueError("rk4_substeps must be strictly positive")
+        if not self.force_slider_values_newtons:
+            raise ValueError("force_slider_values_newtons cannot be empty")
