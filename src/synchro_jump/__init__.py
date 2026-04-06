@@ -12,16 +12,19 @@ from synchro_jump.optimization.explicit_platform import (
 )
 from synchro_jump.optimization.force_profile import PlatformForceProfile
 from synchro_jump.optimization.problem import VerticalJumpOcpSettings
+from synchro_jump.optimization.runtime_summary import OcpRuntimeSummary, build_ocp_runtime_summary
 from synchro_jump.optimization.surrogate import estimate_takeoff_velocity_from_contact_profile
 
 __all__ = [
     "AthleteMorphology",
     "CoupledPlatformSolution",
+    "OcpRuntimeSummary",
     "PlatformForceProfile",
     "PlatformInteractionModel",
     "VerticalJumpBioptimOcpBuilder",
     "VerticalJumpOcpBlueprint",
     "VerticalJumpOcpSettings",
+    "build_ocp_runtime_summary",
     "estimate_jump_apex_height",
     "estimate_takeoff_velocity_from_contact_profile",
     "platform_actuation_force",

@@ -11,6 +11,7 @@ from synchro_jump.modeling import AthleteMorphology, PlanarJumperModelDefinition
 from synchro_jump.optimization import (
     PlatformForceProfile,
     VerticalJumpBioptimOcpBuilder,
+    build_ocp_runtime_summary,
     estimate_jump_apex_height,
     estimate_takeoff_velocity_from_contact_profile,
 )
@@ -30,6 +31,8 @@ class SynchroJumpApp:
         self.force_var = tk.DoubleVar(value=1100.0)
         self.mass_var = tk.DoubleVar(value=float(self.base_settings.athlete_mass_kg))
         self.status_var = tk.StringVar()
+        self.export_status = ""
+        self.runtime_status = ""
 
         self.figure_widget = None
         self.force_axis = None
@@ -77,7 +80,8 @@ class SynchroJumpApp:
         )
         self.mass_scale.pack(fill=tk.X, pady=(0, 12))
 
-        ttk.Button(parent, text="Exporter le modele", command=self.export_model).pack(fill=tk.X, pady=(8, 8))
+        ttk.Button(parent, text="Construire l'OCP", command=self.build_ocp).pack(fill=tk.X, pady=(8, 8))
+        ttk.Button(parent, text="Exporter le modele", command=self.export_model).pack(fill=tk.X, pady=(0, 8))
         ttk.Label(parent, textvariable=self.status_var, wraplength=260, justify=tk.LEFT).pack(
             fill=tk.X, pady=(12, 0)
         )
@@ -133,6 +137,7 @@ class SynchroJumpApp:
 
         contact_profile = self.current_contact_profile()
         morphology = self.current_morphology()
+        blueprint = VerticalJumpBioptimOcpBuilder(settings=self.current_settings()).blueprint(float(self.force_var.get()))
         takeoff_velocity = estimate_takeoff_velocity_from_contact_profile(
             contact_force_profile_newtons=contact_profile,
             athlete_mass_kg=morphology.mass_kg,
@@ -141,13 +146,24 @@ class SynchroJumpApp:
         takeoff_height = 0.56 * morphology.height_m
         apex_height = estimate_jump_apex_height(takeoff_height, takeoff_velocity)
 
-        self.status_var.set(
+        status_lines = [
             "Resume surrogate:\n"
             f"- vitesse de decollage estimee: {takeoff_velocity:.2f} m/s\n"
             f"- hauteur apex estimee: {apex_height:.2f} m\n"
             f"- noeuds OCP: {self.base_settings.n_shooting}\n"
-            f"- temps libre <= {self.base_settings.final_time_upper_bound_s:.1f} s"
-        )
+            f"- temps libre <= {self.base_settings.final_time_upper_bound_s:.1f} s",
+            (
+                "Configuration OCP:\n"
+                f"- objectif: {blueprint.objective_name}\n"
+                f"- dynamique: {blueprint.dynamics_name}\n"
+                "- decollage impose: force contact finale = 0 N"
+            ),
+        ]
+        if self.runtime_status:
+            status_lines.append(self.runtime_status)
+        if self.export_status:
+            status_lines.append(self.export_status)
+        self.status_var.set("\n\n".join(status_lines))
 
         if self.force_axis is None or self.pose_axis is None or self.figure_widget is None:
             return
@@ -223,7 +239,8 @@ class SynchroJumpApp:
 
         builder = VerticalJumpBioptimOcpBuilder(settings=self.current_settings())
         model_path = builder.export_model(Path("generated"))
-        self.status_var.set(f"{self.status_var.get()}\n\nModele exporte: {model_path}")
+        self.export_status = f"Modele exporte: {model_path}"
+        self.refresh()
 
 
 def launch_app() -> None:
@@ -232,3 +249,21 @@ def launch_app() -> None:
     root = tk.Tk()
     SynchroJumpApp(root)
     root.mainloop()
+    def build_ocp(self) -> None:
+        """Attempt to instantiate the `bioptim` OCP for the current sliders."""
+
+        summary = build_ocp_runtime_summary(
+            settings=self.current_settings(),
+            peak_force_newtons=float(self.force_var.get()),
+        )
+        if summary.success:
+            self.runtime_status = (
+                "Construction runtime:\n"
+                f"- succes: oui\n"
+                f"- phases: {summary.n_phases}\n"
+                f"- etats: {', '.join(summary.state_names)}\n"
+                f"- controles: {', '.join(summary.control_names)}"
+            )
+        else:
+            self.runtime_status = f"Construction runtime:\n- succes: non\n- message: {summary.message}"
+        self.refresh()
