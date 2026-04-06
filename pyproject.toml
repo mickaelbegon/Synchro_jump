@@ -1,0 +1,57 @@
+[build-system]
+requires = [
+    "setuptools>=68",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synchro-jump"
+version = "0.1.0"
+description = "Vertical planar jump OCP with a moving platform."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "mickaelbegon" },
+]
+dependencies = []
+
+[project.optional-dependencies]
+gui = [
+    "matplotlib>=3.8",
+    "numpy>=1.25",
+]
+opt = [
+    "numpy>=1.25",
+    "casadi>=3.6",
+    "bioptim",
+    "biobuddy",
+]
+test = [
+    "pytest>=8.0",
+    "black>=24.0",
+    "isort>=5.13",
+    "flake8>=7.0",
+]
+
+[project.scripts]
+synchro-jump = "synchro_jump.__main__:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
