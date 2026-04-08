@@ -26,6 +26,7 @@ class SynchroJumpApp:
 
     default_solve_iterations = 25
     max_solve_iterations = 100
+    animation_delay_ms = 80
 
     def __init__(self, root: tk.Tk) -> None:
         """Create the main window and its interactive controls."""
@@ -38,11 +39,14 @@ class SynchroJumpApp:
         self.force_var = tk.DoubleVar(value=1100.0)
         self.mass_var = tk.DoubleVar(value=float(self.base_settings.athlete_mass_kg))
         self.solve_iterations_var = tk.IntVar(value=self.default_solve_iterations)
+        self.animation_frame_var = tk.IntVar(value=0)
         self.status_var = tk.StringVar()
         self.export_status = ""
         self.build_status = ""
         self.solution_status = ""
         self.runtime_solution: OcpSolveSummary | None = None
+        self.animation_playing = False
+        self.animation_job: str | None = None
 
         self.figure_widget = None
         self.force_axis = None
@@ -106,6 +110,22 @@ class SynchroJumpApp:
         ttk.Button(parent, text="Construire l'OCP", command=self.build_ocp).pack(fill=tk.X, pady=(8, 8))
         ttk.Button(parent, text="Resoudre l'OCP", command=self.solve_ocp).pack(fill=tk.X, pady=(0, 8))
         ttk.Button(parent, text="Exporter le modele", command=self.export_model).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(parent, text="Animation trajectoire").pack(anchor=tk.W, pady=(12, 0))
+        self.animation_scale = tk.Scale(
+            parent,
+            from_=0,
+            to=0,
+            resolution=1,
+            orient=tk.HORIZONTAL,
+            variable=self.animation_frame_var,
+            command=self._on_animation_frame_change,
+            length=260,
+        )
+        self.animation_scale.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(parent, text="Lecture / Pause", command=self.toggle_animation).pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(parent, text="Revenir au debut", command=self.reset_animation).pack(fill=tk.X, pady=(0, 8))
+
         ttk.Label(parent, textvariable=self.status_var, wraplength=300, justify=tk.LEFT).pack(
             fill=tk.X, pady=(12, 0)
         )
@@ -142,12 +162,21 @@ class SynchroJumpApp:
         self._invalidate_runtime_results()
         self.refresh()
 
+    def _on_animation_frame_change(self, _value: str) -> None:
+        """Redraw the figures when the animation cursor changes."""
+
+        self.refresh()
+
     def _invalidate_runtime_results(self) -> None:
         """Drop runtime build/solve summaries tied to the previous sliders."""
 
+        self._stop_animation()
         self.build_status = ""
         self.solution_status = ""
         self.runtime_solution = None
+        self.animation_frame_var.set(0)
+        if hasattr(self, "animation_scale"):
+            self.animation_scale.configure(to=0)
 
     def current_settings(self):
         """Return the OCP settings associated with the current sliders."""
@@ -163,6 +192,13 @@ class SynchroJumpApp:
         """Return the requested number of IPOPT iterations."""
 
         return int(self.solve_iterations_var.get())
+
+    def current_animation_frame(self) -> int:
+        """Return the currently displayed animation frame index."""
+
+        if self.runtime_solution is None or self.runtime_solution.time.size == 0:
+            return 0
+        return max(0, min(int(self.animation_frame_var.get()), self.runtime_solution.time.size - 1))
 
     def current_morphology(self) -> AthleteMorphology:
         """Return the morphology associated with the current mass slider."""
@@ -207,6 +243,14 @@ class SynchroJumpApp:
                 "- decollage impose: force contact finale = 0 N"
             ),
         ]
+        if self.runtime_solution is not None and self.runtime_solution.time.size:
+            frame_index = self.current_animation_frame()
+            status_lines.append(
+                "Animation:\n"
+                f"- frame: {frame_index + 1}/{self.runtime_solution.time.size}\n"
+                f"- temps courant: {self.runtime_solution.time[frame_index]:.2f} s\n"
+                f"- lecture: {'oui' if self.animation_playing else 'non'}"
+            )
         if self.build_status:
             status_lines.append(self.build_status)
         if self.solution_status:
@@ -325,6 +369,17 @@ class SynchroJumpApp:
                         linestyle="-",
                         alpha=0.45 + 0.15 * sample_rank,
                     )
+                animation_index = self.current_animation_frame()
+                animated_q = tuple([*q_roots[:, animation_index], *q_joints[:, animation_index]])
+                animated_points = self._pose_points_from_q(morphology, animated_q)
+                self._draw_stick_figure(
+                    self.pose_axis,
+                    animated_points,
+                    color="#f94144",
+                    label="Frame animee",
+                    linestyle="-",
+                    alpha=1.0,
+                )
 
         self.pose_axis.plot([-0.35, 0.35], [0.0, 0.0], color="#8c5e34", linewidth=4.0)
         self.pose_axis.set_aspect("equal", adjustable="box")
@@ -378,6 +433,7 @@ class SynchroJumpApp:
             return
 
         time = self.runtime_solution.time
+        frame_index = self.current_animation_frame()
         self.kinematics_axis.plot(
             time,
             self.runtime_solution.com_height_trajectory_m,
@@ -395,6 +451,13 @@ class SynchroJumpApp:
                 linewidth=2.0,
                 label="Plateforme",
             )
+        self.kinematics_axis.axvline(
+            time[frame_index],
+            color="#f94144",
+            linewidth=1.8,
+            linestyle="--",
+            label="Frame courant",
+        )
 
         self.kinematics_axis.set_xlabel("Temps (s)")
         self.kinematics_axis.set_ylabel("Hauteur (m)")
@@ -449,6 +512,7 @@ class SynchroJumpApp:
     def solve_ocp(self) -> None:
         """Solve one quick runtime OCP and expose the trajectories in the GUI."""
 
+        self._stop_animation()
         self.solution_status = (
             "Resolution runtime:\n"
             f"- en cours...\n- iterations max: {self.current_solver_iterations()}"
@@ -463,6 +527,8 @@ class SynchroJumpApp:
         )
         if summary.success:
             self.runtime_solution = summary
+            self.animation_frame_var.set(0)
+            self.animation_scale.configure(to=max(summary.time.size - 1, 0))
             self.solution_status = (
                 "Resolution runtime:\n"
                 f"- succes: oui\n"
@@ -476,8 +542,60 @@ class SynchroJumpApp:
             )
         else:
             self.runtime_solution = None
+            self.animation_scale.configure(to=0)
             self.solution_status = f"Resolution runtime:\n- succes: non\n- message: {summary.message}"
         self.refresh()
+
+    def toggle_animation(self) -> None:
+        """Start or pause the runtime trajectory animation."""
+
+        if self.runtime_solution is None or self.runtime_solution.time.size == 0:
+            return
+
+        if self.animation_playing:
+            self._stop_animation()
+            self.refresh()
+            return
+
+        self.animation_playing = True
+        self._schedule_animation_step()
+        self.refresh()
+
+    def reset_animation(self) -> None:
+        """Return the animation cursor to the first frame."""
+
+        self._stop_animation()
+        self.animation_frame_var.set(0)
+        self.refresh()
+
+    def _schedule_animation_step(self) -> None:
+        """Schedule the next animation frame if playback is active."""
+
+        if not self.animation_playing:
+            return
+        self.animation_job = self.root.after(self.animation_delay_ms, self._advance_animation)
+
+    def _advance_animation(self) -> None:
+        """Advance the animation cursor by one frame."""
+
+        if self.runtime_solution is None or self.runtime_solution.time.size == 0:
+            self._stop_animation()
+            return
+
+        next_index = self.current_animation_frame() + 1
+        if next_index >= self.runtime_solution.time.size:
+            next_index = 0
+        self.animation_frame_var.set(next_index)
+        self.refresh()
+        self._schedule_animation_step()
+
+    def _stop_animation(self) -> None:
+        """Stop the playback loop if one is active."""
+
+        self.animation_playing = False
+        if self.animation_job is not None:
+            self.root.after_cancel(self.animation_job)
+            self.animation_job = None
 
     def export_model(self) -> None:
         """Export the current `.bioMod` file and append the path to the status text."""

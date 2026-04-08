@@ -10,5 +10,8 @@ def test_gui_exposes_runtime_actions() -> None:
 
     assert callable(getattr(SynchroJumpApp, "build_ocp"))
     assert callable(getattr(SynchroJumpApp, "solve_ocp"))
+    assert callable(getattr(SynchroJumpApp, "toggle_animation"))
+    assert callable(getattr(SynchroJumpApp, "reset_animation"))
     assert SynchroJumpApp.default_solve_iterations > 0
     assert SynchroJumpApp.max_solve_iterations >= SynchroJumpApp.default_solve_iterations
+    assert SynchroJumpApp.animation_delay_ms > 0
