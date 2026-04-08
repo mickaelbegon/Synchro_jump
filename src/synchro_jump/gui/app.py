@@ -224,14 +224,43 @@ class SynchroJumpApp:
         self.force_axis.clear()
         self.force_axis.plot(times, actuation, color="#d1495b", linewidth=2.2, label="Force plateforme")
         self.force_axis.plot(times, contact_profile, color="#2b59c3", linewidth=2.2, label="Contact surrogate")
-        if self.runtime_solution is not None and self.runtime_solution.final_time_s is not None:
-            self.force_axis.axvline(
-                self.runtime_solution.final_time_s,
-                color="#6c9a8b",
-                linestyle="--",
-                linewidth=1.6,
-                label="Temps final runtime",
-            )
+        if self.runtime_solution is not None:
+            if self.runtime_solution.platform_force_trajectory_n.size:
+                self.force_axis.plot(
+                    self.runtime_solution.time,
+                    self.runtime_solution.platform_force_trajectory_n,
+                    color="#f08a24",
+                    linewidth=1.8,
+                    linestyle="--",
+                    label="Force plateforme runtime",
+                )
+            if self.runtime_solution.contact_force_trajectory_n.size:
+                self.force_axis.plot(
+                    self.runtime_solution.time,
+                    self.runtime_solution.contact_force_trajectory_n,
+                    color="#0b6e4f",
+                    linewidth=2.4,
+                    label="Contact runtime",
+                )
+            if self.runtime_solution.final_time_s is not None:
+                self.force_axis.axvline(
+                    self.runtime_solution.final_time_s,
+                    color="#6c9a8b",
+                    linestyle="--",
+                    linewidth=1.6,
+                    label="Temps final runtime",
+                )
+            if (
+                self.runtime_solution.final_time_s is not None
+                and self.runtime_solution.final_contact_force_n is not None
+            ):
+                self.force_axis.scatter(
+                    [self.runtime_solution.final_time_s],
+                    [self.runtime_solution.final_contact_force_n],
+                    color="#0b6e4f",
+                    s=32,
+                    zorder=5,
+                )
         self.force_axis.set_xlabel("Temps (s)")
         self.force_axis.set_ylabel("Force (N)")
         self.force_axis.set_title("Profils de force")
@@ -414,6 +443,8 @@ class SynchroJumpApp:
                 f"- succes: oui\n"
                 f"- statut solveur: {summary.solver_status}\n"
                 f"- temps final: {summary.final_time_s:.2f} s\n"
+                f"- force contact finale: {summary.final_contact_force_n:.2f} N\n"
+                f"- decollage respecte: {'oui' if summary.takeoff_condition_satisfied else 'non'}\n"
                 f"- apex predit: {summary.predicted_apex_height_m:.2f} m\n"
                 f"- temps solveur: {summary.solve_time_s:.2f} s"
             )

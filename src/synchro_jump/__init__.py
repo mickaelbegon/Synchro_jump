@@ -14,6 +14,7 @@ from synchro_jump.optimization.force_profile import PlatformForceProfile
 from synchro_jump.optimization.problem import VerticalJumpOcpSettings
 from synchro_jump.optimization.runtime_solution import (
     OcpSolveSummary,
+    evaluate_contact_force_trajectory,
     evaluate_com_trajectory,
     solve_ocp_runtime_summary,
     summarize_solved_ocp,
@@ -32,6 +33,7 @@ __all__ = [
     "VerticalJumpOcpBlueprint",
     "VerticalJumpOcpSettings",
     "build_ocp_runtime_summary",
+    "evaluate_contact_force_trajectory",
     "evaluate_com_trajectory",
     "estimate_jump_apex_height",
     "estimate_takeoff_velocity_from_contact_profile",

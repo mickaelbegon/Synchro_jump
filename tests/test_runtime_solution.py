@@ -59,13 +59,32 @@ def test_summarize_solved_ocp_extracts_runtime_metrics(tmp_path: Path) -> None:
         assert "platform_position" in state_trajectories
         return np.array([0.92, 0.99, 1.08]), np.array([0.0, 0.6, 1.4])
 
+    def fake_contact_evaluator(
+        _model_path: str | Path,
+        state_trajectories: dict[str, np.ndarray],
+        control_trajectories: dict[str, np.ndarray],
+        **kwargs,
+    ):
+        assert "q_roots" in state_trajectories
+        assert "tau_joints" in control_trajectories
+        assert kwargs["peak_force_newtons"] == 1100.0
+        return (
+            np.array([1100.0, 1100.0, 1050.0]),
+            np.array([450.0, 180.0, 0.0]),
+            np.array([0.2, 0.1, -0.3]),
+        )
+
     summary = summarize_solved_ocp(
         _FakeSolution(),
         model_path=model_path,
         requested_iterations=5,
         n_phases=1,
         merge_nodes_token="nodes",
+        peak_force_newtons=1100.0,
+        platform_mass_kg=80.0,
+        total_duration_s=2.0,
         com_evaluator=fake_com_evaluator,
+        contact_force_evaluator=fake_contact_evaluator,
     )
 
     assert summary.success
@@ -78,9 +97,13 @@ def test_summarize_solved_ocp_extracts_runtime_metrics(tmp_path: Path) -> None:
     assert summary.takeoff_com_height_m == 1.08
     assert summary.takeoff_com_vertical_velocity_m_s == 1.4
     assert summary.predicted_apex_height_m > summary.takeoff_com_height_m
+    assert summary.final_contact_force_n == 0.0
+    assert summary.takeoff_condition_satisfied is True
     assert summary.state_trajectories["q_roots"].shape == (3, 3)
     assert summary.control_trajectories["tau_joints"].shape == (2, 3)
     assert summary.com_height_trajectory_m.shape == (3,)
+    assert np.allclose(summary.contact_force_trajectory_n, [450.0, 180.0, 0.0])
+    assert np.allclose(summary.platform_force_trajectory_n, [1100.0, 1100.0, 1050.0])
 
 
 def test_solve_ocp_runtime_summary_reports_missing_optional_dependency(tmp_path: Path) -> None:
