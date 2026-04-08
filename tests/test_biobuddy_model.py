@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import math
+
+import pytest
+
 from synchro_jump.modeling import AthleteMorphology, PlanarJumperModelDefinition
 
 
@@ -23,3 +27,27 @@ def test_biomod_text_contains_segments_and_contact() -> None:
     assert "segment\tthigh" in biomod_text
     assert "segment\ttrunk" in biomod_text
     assert "contact\tplatform_contact" in biomod_text
+
+
+def test_initial_configuration_aligns_center_of_mass_over_ankle() -> None:
+    """The initial posture should place the CoM above the ankle contact."""
+
+    model_definition = PlanarJumperModelDefinition(AthleteMorphology(height_m=1.60, mass_kg=50.0))
+
+    q_init = model_definition.initial_joint_configuration_rad
+    center_of_mass_x, _ = model_definition.center_of_mass_position(q_init)
+
+    assert center_of_mass_x == pytest.approx(q_init[0], abs=1e-8)
+
+
+def test_initial_alignment_keeps_requested_knee_and_hip_flexion() -> None:
+    """The CoM alignment should primarily adjust the ankle-equivalent rotation."""
+
+    model_definition = PlanarJumperModelDefinition(AthleteMorphology(height_m=1.60, mass_kg=50.0))
+
+    q_crouched = model_definition.crouched_joint_configuration_rad
+    q_aligned = model_definition.initial_joint_configuration_rad
+
+    assert q_aligned[2] != pytest.approx(q_crouched[2])
+    assert q_aligned[3] == pytest.approx(-math.radians(100.0))
+    assert q_aligned[4] == pytest.approx(math.radians(100.0))
