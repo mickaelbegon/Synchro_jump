@@ -7,6 +7,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
+import numpy as np
+
 from synchro_jump.modeling import AthleteMorphology, PlanarJumperModelDefinition
 from synchro_jump.optimization import (
     OcpSolveSummary,
@@ -22,7 +24,8 @@ from synchro_jump.optimization import (
 class SynchroJumpApp:
     """Tkinter application with sliders, figures, and jump-runtime summaries."""
 
-    quick_solve_iterations = 5
+    default_solve_iterations = 25
+    max_solve_iterations = 100
 
     def __init__(self, root: tk.Tk) -> None:
         """Create the main window and its interactive controls."""
@@ -34,6 +37,7 @@ class SynchroJumpApp:
         self.base_settings = VerticalJumpBioptimOcpBuilder().settings
         self.force_var = tk.DoubleVar(value=1100.0)
         self.mass_var = tk.DoubleVar(value=float(self.base_settings.athlete_mass_kg))
+        self.solve_iterations_var = tk.IntVar(value=self.default_solve_iterations)
         self.status_var = tk.StringVar()
         self.export_status = ""
         self.build_status = ""
@@ -87,12 +91,20 @@ class SynchroJumpApp:
         )
         self.mass_scale.pack(fill=tk.X, pady=(0, 12))
 
-        ttk.Button(parent, text="Construire l'OCP", command=self.build_ocp).pack(fill=tk.X, pady=(8, 8))
-        ttk.Button(
+        ttk.Label(parent, text="Iterations solveur").pack(anchor=tk.W)
+        self.solve_iterations_scale = tk.Scale(
             parent,
-            text=f"Resoudre l'OCP ({self.quick_solve_iterations} iter.)",
-            command=self.solve_ocp,
-        ).pack(fill=tk.X, pady=(0, 8))
+            from_=0,
+            to=self.max_solve_iterations,
+            resolution=5,
+            orient=tk.HORIZONTAL,
+            variable=self.solve_iterations_var,
+            length=260,
+        )
+        self.solve_iterations_scale.pack(fill=tk.X, pady=(0, 12))
+
+        ttk.Button(parent, text="Construire l'OCP", command=self.build_ocp).pack(fill=tk.X, pady=(8, 8))
+        ttk.Button(parent, text="Resoudre l'OCP", command=self.solve_ocp).pack(fill=tk.X, pady=(0, 8))
         ttk.Button(parent, text="Exporter le modele", command=self.export_model).pack(fill=tk.X, pady=(0, 8))
         ttk.Label(parent, textvariable=self.status_var, wraplength=300, justify=tk.LEFT).pack(
             fill=tk.X, pady=(12, 0)
@@ -146,6 +158,11 @@ class SynchroJumpApp:
         """Return the current platform-force slider value."""
 
         return float(self.force_var.get())
+
+    def current_solver_iterations(self) -> int:
+        """Return the requested number of IPOPT iterations."""
+
+        return int(self.solve_iterations_var.get())
 
     def current_morphology(self) -> AthleteMorphology:
         """Return the morphology associated with the current mass slider."""
@@ -290,16 +307,24 @@ class SynchroJumpApp:
             q_roots = state_trajectories.get("q_roots")
             q_joints = state_trajectories.get("q_joints")
             if q_roots is not None and q_joints is not None:
-                final_q = tuple([*q_roots[:, -1], *q_joints[:, -1]])
-                final_points = self._pose_points_from_q(morphology, final_q)
-                self._draw_stick_figure(
-                    self.pose_axis,
-                    final_points,
-                    color="#c44536",
-                    label="Posture fin OCP",
-                    linestyle="-",
-                    alpha=1.0,
-                )
+                sample_count = min(4, q_roots.shape[1])
+                sample_indices = np.linspace(0, q_roots.shape[1] - 1, sample_count, dtype=int)
+                sample_colors = ("#a1c181", "#619b8a", "#216869", "#c44536")
+                for sample_rank, sample_index in enumerate(sample_indices):
+                    sample_q = tuple([*q_roots[:, sample_index], *q_joints[:, sample_index]])
+                    sample_points = self._pose_points_from_q(morphology, sample_q)
+                    self._draw_stick_figure(
+                        self.pose_axis,
+                        sample_points,
+                        color=sample_colors[sample_rank],
+                        label=(
+                            "Posture fin OCP"
+                            if sample_rank == len(sample_indices) - 1
+                            else f"Snapshot {sample_rank + 1}"
+                        ),
+                        linestyle="-",
+                        alpha=0.45 + 0.15 * sample_rank,
+                    )
 
         self.pose_axis.plot([-0.35, 0.35], [0.0, 0.0], color="#8c5e34", linewidth=4.0)
         self.pose_axis.set_aspect("equal", adjustable="box")
@@ -426,7 +451,7 @@ class SynchroJumpApp:
 
         self.solution_status = (
             "Resolution runtime:\n"
-            f"- en cours...\n- iterations max: {self.quick_solve_iterations}"
+            f"- en cours...\n- iterations max: {self.current_solver_iterations()}"
         )
         self.refresh()
         self.root.update_idletasks()
@@ -434,13 +459,14 @@ class SynchroJumpApp:
         summary = solve_ocp_runtime_summary(
             settings=self.current_settings(),
             peak_force_newtons=self.current_force_newtons(),
-            maximum_iterations=self.quick_solve_iterations,
+            maximum_iterations=self.current_solver_iterations(),
         )
         if summary.success:
             self.runtime_solution = summary
             self.solution_status = (
                 "Resolution runtime:\n"
                 f"- succes: oui\n"
+                f"- iterations demandees: {summary.requested_iterations}\n"
                 f"- statut solveur: {summary.solver_status}\n"
                 f"- temps final: {summary.final_time_s:.2f} s\n"
                 f"- force contact finale: {summary.final_contact_force_n:.2f} N\n"

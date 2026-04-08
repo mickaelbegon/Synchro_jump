@@ -26,11 +26,14 @@ def test_gui_builds_controls_and_status() -> None:
         assert app.force_scale.cget("to") == pytest.approx(1300.0)
         assert app.mass_scale.cget("from") == pytest.approx(40.0)
         assert app.mass_scale.cget("to") == pytest.approx(55.0)
+        assert app.solve_iterations_scale.cget("from") == pytest.approx(0.0)
+        assert app.solve_iterations_scale.cget("to") == pytest.approx(float(app.max_solve_iterations))
         assert "vitesse de decollage" in app.status_var.get()
         assert app.force_axis is not None
         assert app.pose_axis is not None
         assert app.kinematics_axis is not None
         assert callable(app.build_ocp)
         assert callable(app.solve_ocp)
+        assert app.current_solver_iterations() == app.default_solve_iterations
     finally:
         root.destroy()
