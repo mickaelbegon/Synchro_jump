@@ -29,5 +29,8 @@ def test_gui_builds_controls_and_status() -> None:
         assert "vitesse de decollage" in app.status_var.get()
         assert app.force_axis is not None
         assert app.pose_axis is not None
+        assert app.kinematics_axis is not None
+        assert callable(app.build_ocp)
+        assert callable(app.solve_ocp)
     finally:
         root.destroy()
