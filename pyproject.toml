@@ -25,7 +25,6 @@ gui = [
 opt = [
     "numpy>=1.25",
     "casadi>=3.6",
-    "bioptim",
     "biobuddy",
 ]
 test = [

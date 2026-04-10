@@ -5,6 +5,7 @@ dependencies:
   - python=3.11
   - pip
   - tk
+  - bioptim
   - numpy>=1.25
   - matplotlib>=3.8
   - casadi>=3.6
