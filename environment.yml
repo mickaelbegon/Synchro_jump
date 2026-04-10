@@ -1,0 +1,16 @@
+name: synchro-jump
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - tk
+  - numpy>=1.25
+  - matplotlib>=3.8
+  - casadi>=3.6
+  - pytest>=8.0
+  - black>=24.0
+  - isort>=5.13
+  - flake8>=7.0
+  - pip:
+      - -e .[gui,opt,test]

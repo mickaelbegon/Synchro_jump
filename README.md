@@ -10,8 +10,24 @@ python -m pip install -e .[test,opt,gui]
 ./scripts/run_checks.sh
 ```
 
+## Environnement Conda
+
+Creer un environnement Conda reproductible depuis la racine du projet :
+
+```bash
+conda env create -f environment.yml
+conda activate synchro-jump
+```
+
+Si l'environnement existe deja et que tu veux juste le mettre a jour :
+
+```bash
+conda env update -f environment.yml --prune
+conda activate synchro-jump
+```
+
 ## Lancer la GUI
 
 ```bash
-python -m synchro_jump
+PYTHONPATH=src python -m synchro_jump
 ```
