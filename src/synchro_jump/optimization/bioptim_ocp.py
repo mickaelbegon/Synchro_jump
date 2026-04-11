@@ -43,6 +43,39 @@ class VerticalJumpOcpBlueprint:
         return tuple(targets)
 
 
+def _import_bioptim_build_api():
+    """Return the `bioptim` runtime symbols required by the current OCP builder."""
+
+    import bioptim
+
+    required_names = (
+        "BiorbdModel",
+        "BoundsList",
+        "ConstraintFcn",
+        "ConstraintList",
+        "ControlType",
+        "Dynamics",
+        "InitialGuessList",
+        "InterpolationType",
+        "Node",
+        "ObjectiveFcn",
+        "ObjectiveList",
+        "OdeSolver",
+        "OptimalControlProgram",
+        "PhaseDynamics",
+    )
+    missing_names = [name for name in required_names if not hasattr(bioptim, name)]
+    if missing_names:
+        version = getattr(bioptim, "__version__", "unknown")
+        raise RuntimeError(
+            "Version de bioptim non supportee pour cet OCP explicite: "
+            f"{version}. Symboles manquants: {', '.join(missing_names)}. "
+            "Utilise l'environnement Conda du projet avec bioptim=3.2.1."
+        )
+
+    return {name: getattr(bioptim, name) for name in required_names}
+
+
 def _symbolic_positive_part(value):
     """Return the positive part of one CasADi or numeric value."""
 
@@ -60,20 +93,6 @@ def _constant_bounds_with_fixed_start(lower_bounds, upper_bounds, start_values):
     upper = np.asarray(upper_bounds, dtype=float).reshape((-1, 1))
     start = np.asarray(start_values, dtype=float).reshape((-1, 1))
     return np.hstack((start, lower, lower)), np.hstack((start, upper, upper))
-
-
-def _contact_index_from_name(model, contact_name: str) -> int:
-    """Resolve a rigid-contact index without relying on optional helpers."""
-
-    contact_names = list(model.contact_names)
-    if contact_name in contact_names:
-        return contact_names.index(contact_name)
-
-    axis_matches = [index for index, name in enumerate(contact_names) if name.startswith(f"{contact_name}_")]
-    if len(axis_matches) == 1:
-        return axis_matches[0]
-
-    raise ValueError(f"Unknown contact name: {contact_name}")
 
 
 def _symbolic_platform_force(time, peak_force_newtons: float, total_duration_s: float, taper_duration_s: float):
@@ -113,50 +132,24 @@ def _split_q_vectors(nlp, states, controls):
     return q, qdot, tau_joints, platform_position, platform_velocity
 
 
-def _coupled_platform_dynamics_symbolic(
-    model,
+def _symbolic_compliant_contact_force(
     q,
     qdot,
-    tau_joints,
-    parameters,
     *,
-    contact_index: int,
-    platform_force_newtons,
-    platform_mass_kg: float,
-    gravity: float,
-    cx_type,
+    platform_position,
+    platform_velocity,
+    contact_stiffness_n_per_m: float,
+    contact_damping_n_s_per_m: float,
 ):
-    """Solve the coupled jumper-platform dynamics symbolically."""
+    """Return the compliant contact force between the platform and the foot."""
 
-    from casadi import horzcat, jacobian, solve, substitute, vertcat
-
-    nq = q.shape[0]
-    tau = vertcat(cx_type.zeros(model.nb_root, 1), tau_joints)
-    zero_qddot = cx_type.zeros(nq, 1)
-    qddot_symbol = cx_type.sym("qddot_contact", nq, 1)
-    contact_axis = model.rigid_contact_index(contact_index)[0]
-    contact_acceleration = model.rigid_contact_acceleration(contact_index, contact_axis)
-    contact_acceleration_expression = contact_acceleration(q, qdot, qddot_symbol, parameters)
-    contact_jacobian = substitute(jacobian(contact_acceleration_expression, qddot_symbol), qddot_symbol, zero_qddot)
-    contact_bias = contact_acceleration(q, qdot, zero_qddot, parameters)
-    mass_matrix = model.mass_matrix()(q, parameters)
-    nonlinear_effects = model.non_linear_effects()(q, qdot, parameters)
-
-    augmented_matrix = vertcat(
-        horzcat(mass_matrix, -contact_jacobian.T, cx_type.zeros(nq, 1)),
-        horzcat(contact_jacobian, cx_type.zeros(1, 1), -cx_type.ones(1, 1)),
-        horzcat(cx_type.zeros(1, nq), cx_type.ones(1, 1), platform_mass_kg * cx_type.ones(1, 1)),
+    foot_position = q[1]
+    foot_velocity = qdot[1]
+    compression = _symbolic_positive_part(platform_position - foot_position)
+    closing_speed = _symbolic_positive_part(platform_velocity - foot_velocity)
+    return _symbolic_positive_part(
+        contact_stiffness_n_per_m * compression + contact_damping_n_s_per_m * closing_speed
     )
-    rhs = vertcat(
-        tau - nonlinear_effects,
-        -contact_bias,
-        platform_force_newtons - platform_mass_kg * gravity,
-    )
-    solution = solve(augmented_matrix, rhs)
-    qddot = solution[:nq]
-    contact_force = solution[nq]
-    platform_acceleration = solution[nq + 1]
-    return qddot, contact_force, platform_acceleration
 
 
 def _predicted_apex_height(controller, gravity: float = 9.81):
@@ -173,35 +166,19 @@ _predicted_apex_height.__name__ = "predicted_apex_height"
 
 def _contact_force_penalty(
     controller,
-    peak_force_newtons: float,
-    platform_mass_kg: float,
-    gravity: float,
-    contact_name: str = "platform_contact",
-    total_duration_s: float = 2.0,
-    taper_duration_s: float = 0.3,
+    contact_stiffness_n_per_m: float,
+    contact_damping_n_s_per_m: float,
 ):
-    """Return the coupled contact force used in custom constraints."""
+    """Return the compliant contact force used in custom constraints."""
 
-    contact_index = _contact_index_from_name(controller.model, contact_name)
-    qddot, contact_force, _ = _coupled_platform_dynamics_symbolic(
-        controller.model,
+    return _symbolic_compliant_contact_force(
         controller.q,
         controller.qdot,
-        controller.tau,
-        controller.parameters.cx,
-        contact_index=contact_index,
-        platform_force_newtons=_symbolic_platform_force(
-            controller.time.cx,
-            peak_force_newtons=peak_force_newtons,
-            total_duration_s=total_duration_s,
-            taper_duration_s=taper_duration_s,
-        ),
-        platform_mass_kg=platform_mass_kg,
-        gravity=gravity,
-        cx_type=controller.cx,
+        platform_position=controller.states["platform_position"].cx,
+        platform_velocity=controller.states["platform_velocity"].cx,
+        contact_stiffness_n_per_m=contact_stiffness_n_per_m,
+        contact_damping_n_s_per_m=contact_damping_n_s_per_m,
     )
-    _ = qddot
-    return contact_force
 
 
 _contact_force_penalty.__name__ = "contact_force_penalty"
@@ -216,7 +193,8 @@ def _configure_explicit_platform_dynamics(
     taper_duration_s: float,
     platform_mass_kg: float,
     gravity: float,
-    contact_name: str = "platform_contact",
+    contact_stiffness_n_per_m: float,
+    contact_damping_n_s_per_m: float,
     numerical_data_timeseries=None,
     contact_type=(),
     **_,
@@ -254,7 +232,8 @@ def _configure_explicit_platform_dynamics(
         taper_duration_s=taper_duration_s,
         platform_mass_kg=platform_mass_kg,
         gravity=gravity,
-        contact_index=_contact_index_from_name(nlp.model, contact_name),
+        contact_stiffness_n_per_m=contact_stiffness_n_per_m,
+        contact_damping_n_s_per_m=contact_damping_n_s_per_m,
     )
 
 
@@ -272,37 +251,41 @@ def _explicit_platform_dynamics(
     taper_duration_s: float,
     platform_mass_kg: float,
     gravity: float,
-    contact_index: int,
+    contact_stiffness_n_per_m: float,
+    contact_damping_n_s_per_m: float,
 ):
     """Custom dynamics for the explicit moving platform."""
 
     from bioptim import DynamicsEvaluation, DynamicsFunctions
-    from casadi import vertcat
+    from casadi import solve, vertcat
 
     _ = algebraic_states
     _ = numerical_timeseries
 
     q, qdot, tau_joints, platform_position, platform_velocity = _split_q_vectors(nlp, states, controls)
     dq = DynamicsFunctions.compute_qdot(nlp, q, qdot)
-    qddot, contact_force, platform_acceleration = _coupled_platform_dynamics_symbolic(
-        nlp.model,
+    contact_force = _symbolic_compliant_contact_force(
         q,
         qdot,
-        tau_joints,
-        parameters,
-        contact_index=contact_index,
-        platform_force_newtons=_symbolic_platform_force(
-            time,
-            peak_force_newtons=peak_force_newtons,
-            total_duration_s=total_duration_s,
-            taper_duration_s=taper_duration_s,
-        ),
-        platform_mass_kg=platform_mass_kg,
-        gravity=gravity,
-        cx_type=nlp.cx,
+        platform_position=platform_position,
+        platform_velocity=platform_velocity,
+        contact_stiffness_n_per_m=contact_stiffness_n_per_m,
+        contact_damping_n_s_per_m=contact_damping_n_s_per_m,
     )
-    _ = platform_position
-    _ = contact_force
+    tau = vertcat(nlp.cx.zeros(nlp.model.nb_root, 1), tau_joints)
+    contact_generalized_force = nlp.cx.zeros(nlp.model.nb_q, 1)
+    contact_generalized_force[1] = contact_force
+    qddot = solve(
+        nlp.model.mass_matrix()(q, parameters),
+        tau + contact_generalized_force - nlp.model.non_linear_effects()(q, qdot, parameters),
+    )
+    platform_force_newtons = _symbolic_platform_force(
+        time,
+        peak_force_newtons=peak_force_newtons,
+        total_duration_s=total_duration_s,
+        taper_duration_s=taper_duration_s,
+    )
+    platform_acceleration = (platform_force_newtons - platform_mass_kg * gravity - contact_force) / platform_mass_kg
     dxdt = vertcat(
         dq[: nlp.model.nb_root],
         dq[nlp.model.nb_root :],
@@ -350,22 +333,21 @@ class VerticalJumpBioptimOcpBuilder:
     ):
         """Instantiate the explicit-platform `bioptim` OCP."""
 
-        from bioptim import (
-            BiorbdModel,
-            BoundsList,
-            ConstraintFcn,
-            ConstraintList,
-            ControlType,
-            Dynamics,
-            InitialGuessList,
-            InterpolationType,
-            Node,
-            ObjectiveFcn,
-            ObjectiveList,
-            OdeSolver,
-            OptimalControlProgram,
-            PhaseDynamics,
-        )
+        bioptim_api = _import_bioptim_build_api()
+        BiorbdModel = bioptim_api["BiorbdModel"]
+        BoundsList = bioptim_api["BoundsList"]
+        ConstraintFcn = bioptim_api["ConstraintFcn"]
+        ConstraintList = bioptim_api["ConstraintList"]
+        ControlType = bioptim_api["ControlType"]
+        Dynamics = bioptim_api["Dynamics"]
+        InitialGuessList = bioptim_api["InitialGuessList"]
+        InterpolationType = bioptim_api["InterpolationType"]
+        Node = bioptim_api["Node"]
+        ObjectiveFcn = bioptim_api["ObjectiveFcn"]
+        ObjectiveList = bioptim_api["ObjectiveList"]
+        OdeSolver = bioptim_api["OdeSolver"]
+        OptimalControlProgram = bioptim_api["OptimalControlProgram"]
+        PhaseDynamics = bioptim_api["PhaseDynamics"]
 
         blueprint = self.blueprint(peak_force_newtons)
         model_filepath = Path(model_path) if model_path is not None else self.export_model(Path.cwd() / "generated")
@@ -390,20 +372,16 @@ class VerticalJumpBioptimOcpBuilder:
             node=Node.ALL_SHOOTING,
             min_bound=0.0,
             max_bound=5000.0,
-            peak_force_newtons=peak_force_newtons,
-            platform_mass_kg=self.settings.platform_mass_kg,
-            gravity=9.81,
-            total_duration_s=self.settings.final_time_upper_bound_s,
+            contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
+            contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
         )
         constraints.add(
             _contact_force_penalty,
             node=Node.END,
             min_bound=0.0,
             max_bound=0.0,
-            peak_force_newtons=peak_force_newtons,
-            platform_mass_kg=self.settings.platform_mass_kg,
-            gravity=9.81,
-            total_duration_s=self.settings.final_time_upper_bound_s,
+            contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
+            contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
         )
         constraints.add(
             ConstraintFcn.TIME_CONSTRAINT,
@@ -423,6 +401,8 @@ class VerticalJumpBioptimOcpBuilder:
             taper_duration_s=0.3,
             platform_mass_kg=self.settings.platform_mass_kg,
             gravity=9.81,
+            contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
+            contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
         )
 
         q_bounds = bio_model.bounds_from_ranges("q")

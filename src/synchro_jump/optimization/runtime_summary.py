@@ -41,6 +41,12 @@ def build_ocp_runtime_summary(
             message=f"Dependance optionnelle manquante pour construire l'OCP: {dependency_name}",
             model_path=model_path,
         )
+    except RuntimeError as exc:
+        return OcpRuntimeSummary(
+            success=False,
+            message=str(exc),
+            model_path=model_path,
+        )
     except Exception as exc:  # pragma: no cover - runtime safety net
         return OcpRuntimeSummary(
             success=False,

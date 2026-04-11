@@ -75,3 +75,25 @@ def test_build_ocp_runtime_summary_exposes_state_and_control_names(monkeypatch, 
     assert summary.n_phases == 1
     assert summary.state_names == ("q_roots", "q_joints")
     assert summary.control_names == ("tau_joints",)
+
+
+def test_build_ocp_runtime_summary_reports_unsupported_bioptim_version(monkeypatch, tmp_path: Path) -> None:
+    """One explicit runtime error should be exposed without extra wrapping."""
+
+    model_path = tmp_path / "jumper.bioMod"
+    model_path.write_text("version 4\n", encoding="utf-8")
+
+    monkeypatch.setattr(VerticalJumpBioptimOcpBuilder, "export_model", lambda self, _path: model_path)
+
+    def fail_build(self, peak_force_newtons: float, *, model_path: Path, final_time_guess: float = 1.0):
+        _ = peak_force_newtons
+        _ = model_path
+        _ = final_time_guess
+        raise RuntimeError("Version de bioptim non supportee: 3.4.0")
+
+    monkeypatch.setattr(VerticalJumpBioptimOcpBuilder, "build_ocp", fail_build)
+
+    summary = build_ocp_runtime_summary(VerticalJumpOcpSettings(athlete_mass_kg=50.0), 1100.0)
+
+    assert not summary.success
+    assert summary.message == "Version de bioptim non supportee: 3.4.0"

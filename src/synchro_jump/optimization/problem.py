@@ -24,6 +24,8 @@ class VerticalJumpOcpSettings:
     platform_mass_kg: float = 80.0
     athlete_height_m: float = 1.60
     athlete_mass_kg: float = 50.0
+    contact_stiffness_n_per_m: float = 30000.0
+    contact_damping_n_s_per_m: float = 1500.0
     tau_min_nm: float = -500.0
     tau_max_nm: float = 500.0
     final_time_upper_bound_s: float = 2.0
@@ -43,6 +45,10 @@ class VerticalJumpOcpSettings:
             raise ValueError("athlete_height_m must be strictly positive")
         if self.athlete_mass_kg not in self.mass_slider_values_kg:
             raise ValueError("athlete_mass_kg must match one slider value")
+        if self.contact_stiffness_n_per_m < 0.0:
+            raise ValueError("contact_stiffness_n_per_m must stay non-negative")
+        if self.contact_damping_n_s_per_m < 0.0:
+            raise ValueError("contact_damping_n_s_per_m must stay non-negative")
         if self.tau_min_nm >= self.tau_max_nm:
             raise ValueError("tau_min_nm must stay below tau_max_nm")
         if self.final_time_lower_bound_s <= 0.0:

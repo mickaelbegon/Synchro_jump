@@ -28,3 +28,10 @@ def test_settings_reject_mass_outside_slider_grid() -> None:
 
     with pytest.raises(ValueError, match="slider value"):
         VerticalJumpOcpSettings(athlete_mass_kg=52.0)
+
+
+def test_settings_reject_negative_contact_stiffness() -> None:
+    """The compliant contact parameters should stay physically meaningful."""
+
+    with pytest.raises(ValueError, match="contact_stiffness"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, contact_stiffness_n_per_m=-1.0)

@@ -240,6 +240,8 @@ class SynchroJumpApp:
                 "Configuration OCP:\n"
                 f"- objectif: {blueprint.objective_name}\n"
                 f"- dynamique: {blueprint.dynamics_name}\n"
+                f"- contact physique: k={self.base_settings.contact_stiffness_n_per_m:.0f} N/m, "
+                f"c={self.base_settings.contact_damping_n_s_per_m:.0f} N.s/m\n"
                 "- decollage impose: force contact finale = 0 N"
             ),
         ]
@@ -301,7 +303,7 @@ class SynchroJumpApp:
                     self.runtime_solution.contact_force_trajectory_n,
                     color="#0b6e4f",
                     linewidth=2.4,
-                    label="Contact runtime",
+                    label="Contact physique runtime",
                 )
             if self.runtime_solution.final_time_s is not None:
                 self.force_axis.axvline(

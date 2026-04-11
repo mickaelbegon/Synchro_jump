@@ -12,6 +12,10 @@ conda env create -f environment.yml
 conda activate synchro-jump
 ```
 
+Le projet cible actuellement `bioptim 3.2.1`. Une version plus recente comme
+`3.4.0` change l'API utilisee par l'OCP explicite et provoque un echec de
+construction runtime.
+
 Si l'environnement existe deja :
 
 ```bash
@@ -24,7 +28,7 @@ Le package du projet est ensuite disponible en mode editable via le fichier d'en
 Si tu veux installer manuellement dans un environnement deja cree :
 
 ```bash
-conda install -c conda-forge bioptim
+conda install -c conda-forge bioptim=3.2.1
 python -m pip install -e .[test,opt,gui]
 ./scripts/run_checks.sh
 ```

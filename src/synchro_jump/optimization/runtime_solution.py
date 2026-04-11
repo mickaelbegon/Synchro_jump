@@ -9,10 +9,10 @@ from typing import Any, Callable
 import numpy as np
 
 from synchro_jump.optimization.bioptim_ocp import VerticalJumpBioptimOcpBuilder
+from synchro_jump.optimization.contact import PlatformInteractionModel
 from synchro_jump.optimization.explicit_platform import (
     platform_actuation_force,
     predicted_apex_height_expression_numeric,
-    solve_coupled_platform_dynamics_numeric,
 )
 from synchro_jump.optimization.problem import VerticalJumpOcpSettings
 
@@ -72,20 +72,6 @@ def _solution_scalar(value: Any) -> float | None:
     return float(array.reshape((-1,))[0])
 
 
-def _contact_index_from_name(contact_names: tuple[str, ...], contact_name: str) -> int:
-    """Resolve one rigid-contact index from one exported contact name."""
-
-    names = list(contact_names)
-    if contact_name in names:
-        return names.index(contact_name)
-
-    axis_matches = [index for index, name in enumerate(names) if name.startswith(f"{contact_name}_")]
-    if len(axis_matches) == 1:
-        return axis_matches[0]
-
-    raise ValueError(f"Unknown contact name: {contact_name}")
-
-
 def _control_column(controls: np.ndarray, node_index: int) -> np.ndarray:
     """Return one control column, reusing the last valid column when needed."""
 
@@ -139,67 +125,50 @@ def evaluate_contact_force_trajectory(
     time: np.ndarray,
     peak_force_newtons: float,
     platform_mass_kg: float,
-    total_duration_s: float,
+    contact_stiffness_n_per_m: float = 30000.0,
+    contact_damping_n_s_per_m: float = 1500.0,
+    total_duration_s: float = 2.0,
     taper_duration_s: float = 0.3,
     gravity: float = 9.81,
-    contact_name: str = "platform_contact",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Evaluate actuation, contact force, and platform acceleration trajectories."""
+    """Evaluate actuation, compliant contact force, and platform acceleration trajectories."""
 
-    from casadi import DM
-    from bioptim import BiorbdModel
+    _ = model_path
+    _ = control_trajectories
 
-    model = BiorbdModel(str(Path(model_path)))
     q_trajectory = _merge_split_states(state_trajectories, "q")
     qdot_trajectory = _merge_split_states(state_trajectories, "qdot")
-    tau_joints_trajectory = np.asarray(control_trajectories["tau_joints"], dtype=float)
-
-    contact_index = _contact_index_from_name(model.contact_names, contact_name)
-    contact_axis = model.rigid_contact_index(contact_index)[0]
-    contact_acceleration = model.rigid_contact_acceleration(contact_index, contact_axis)
-    mass_matrix_fun = model.mass_matrix()
-    nonlinear_effects_fun = model.non_linear_effects()
+    platform_position_trajectory = np.asarray(state_trajectories["platform_position"], dtype=float).reshape((-1,))
+    platform_velocity_trajectory = np.asarray(state_trajectories["platform_velocity"], dtype=float).reshape((-1,))
+    interaction = PlatformInteractionModel(
+        platform_mass_kg=platform_mass_kg,
+        gravity=gravity,
+        contact_stiffness_n_per_m=contact_stiffness_n_per_m,
+        contact_damping_n_s_per_m=contact_damping_n_s_per_m,
+    )
 
     platform_force_trajectory = np.zeros(time.shape[0], dtype=float)
     contact_force_trajectory = np.zeros(time.shape[0], dtype=float)
     platform_acceleration_trajectory = np.zeros(time.shape[0], dtype=float)
 
     for node_index, current_time in enumerate(time):
-        q_column = DM(q_trajectory[:, node_index].reshape((-1, 1)))
-        qdot_column = DM(qdot_trajectory[:, node_index].reshape((-1, 1)))
-        zero_qddot = DM.zeros(model.nb_q, 1)
-
-        contact_bias = float(np.asarray(contact_acceleration(q_column, qdot_column, zero_qddot, DM()), dtype=float))
-        contact_jacobian = np.zeros((1, model.nb_q), dtype=float)
-        for dof_index in range(model.nb_q):
-            basis_qddot = DM.zeros(model.nb_q, 1)
-            basis_qddot[dof_index] = 1.0
-            basis_acceleration = float(
-                np.asarray(contact_acceleration(q_column, qdot_column, basis_qddot, DM()), dtype=float)
-            )
-            contact_jacobian[0, dof_index] = basis_acceleration - contact_bias
-
-        tau_joints = _control_column(tau_joints_trajectory, node_index)
-        tau = np.concatenate((np.zeros(model.nb_root, dtype=float), tau_joints))
         platform_force = platform_actuation_force(
             float(current_time),
             peak_force_newtons=peak_force_newtons,
             total_duration_s=total_duration_s,
             taper_duration_s=taper_duration_s,
         )
-        coupled_solution = solve_coupled_platform_dynamics_numeric(
-            mass_matrix=np.asarray(mass_matrix_fun(q_column, DM()), dtype=float),
-            nonlinear_effects=np.asarray(nonlinear_effects_fun(q_column, qdot_column, DM()), dtype=float),
-            tau=tau,
-            contact_jacobian=contact_jacobian,
-            contact_bias=contact_bias,
-            platform_force_newtons=platform_force,
-            platform_mass_kg=platform_mass_kg,
-            gravity=gravity,
+        contact_force = interaction.compliant_contact_force(
+            platform_position_m=float(platform_position_trajectory[node_index]),
+            platform_velocity_m_s=float(platform_velocity_trajectory[node_index]),
+            foot_position_m=float(q_trajectory[1, node_index]),
+            foot_velocity_m_s=float(qdot_trajectory[1, node_index]),
         )
         platform_force_trajectory[node_index] = platform_force
-        contact_force_trajectory[node_index] = coupled_solution.contact_force
-        platform_acceleration_trajectory[node_index] = coupled_solution.platform_acceleration
+        contact_force_trajectory[node_index] = contact_force
+        platform_acceleration_trajectory[node_index] = (
+            platform_force - platform_mass_kg * gravity - contact_force
+        ) / platform_mass_kg
 
     return platform_force_trajectory, contact_force_trajectory, platform_acceleration_trajectory
 
@@ -213,7 +182,9 @@ def summarize_solved_ocp(
     merge_nodes_token: Any,
     peak_force_newtons: float,
     platform_mass_kg: float,
-    total_duration_s: float,
+    contact_stiffness_n_per_m: float = 30000.0,
+    contact_damping_n_s_per_m: float = 1500.0,
+    total_duration_s: float = 2.0,
     taper_duration_s: float = 0.3,
     gravity: float = 9.81,
     com_evaluator: Callable[[str | Path, dict[str, np.ndarray]], tuple[np.ndarray, np.ndarray]] = evaluate_com_trajectory,
@@ -243,6 +214,8 @@ def summarize_solved_ocp(
             time=time,
             peak_force_newtons=peak_force_newtons,
             platform_mass_kg=platform_mass_kg,
+            contact_stiffness_n_per_m=contact_stiffness_n_per_m,
+            contact_damping_n_s_per_m=contact_damping_n_s_per_m,
             total_duration_s=total_duration_s,
             taper_duration_s=taper_duration_s,
             gravity=gravity,
@@ -336,6 +309,8 @@ def solve_ocp_runtime_summary(
             merge_nodes_token=SolutionMerge.NODES,
             peak_force_newtons=peak_force_newtons,
             platform_mass_kg=settings.platform_mass_kg,
+            contact_stiffness_n_per_m=settings.contact_stiffness_n_per_m,
+            contact_damping_n_s_per_m=settings.contact_damping_n_s_per_m,
             total_duration_s=settings.final_time_upper_bound_s,
         )
     except ModuleNotFoundError as exc:
@@ -343,6 +318,13 @@ def solve_ocp_runtime_summary(
         return OcpSolveSummary(
             success=False,
             message=f"Dependance optionnelle manquante pour resoudre l'OCP: {dependency_name}",
+            model_path=model_path,
+            requested_iterations=maximum_iterations,
+        )
+    except RuntimeError as exc:
+        return OcpSolveSummary(
+            success=False,
+            message=str(exc),
             model_path=model_path,
             requested_iterations=maximum_iterations,
         )
