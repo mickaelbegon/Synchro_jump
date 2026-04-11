@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from synchro_jump.optimization.problem import VerticalJumpOcpSettings
+from synchro_jump.optimization.problem import CONTACT_MODEL_COMPLIANT_UNILATERAL, VerticalJumpOcpSettings
 from synchro_jump.optimization.runtime_solution import solve_ocp_runtime_summary, summarize_solved_ocp
 
 
@@ -99,11 +99,47 @@ def test_summarize_solved_ocp_extracts_runtime_metrics(tmp_path: Path) -> None:
     assert summary.predicted_apex_height_m > summary.takeoff_com_height_m
     assert summary.final_contact_force_n == 0.0
     assert summary.takeoff_condition_satisfied is True
+    assert summary.contact_model == "rigid_unilateral"
     assert summary.state_trajectories["q_roots"].shape == (3, 3)
     assert summary.control_trajectories["tau_joints"].shape == (2, 3)
     assert summary.com_height_trajectory_m.shape == (3,)
     assert np.allclose(summary.contact_force_trajectory_n, [450.0, 180.0, 0.0])
     assert np.allclose(summary.platform_force_trajectory_n, [1100.0, 1100.0, 1050.0])
+
+
+def test_summarize_solved_ocp_passes_selected_contact_model_to_evaluator(tmp_path: Path) -> None:
+    """The runtime summary should forward the selected contact model."""
+
+    model_path = tmp_path / "jumper.bioMod"
+    model_path.write_text("version 4\n", encoding="utf-8")
+
+    def fake_com_evaluator(_model_path: str | Path, _state_trajectories: dict[str, np.ndarray]):
+        return np.array([0.9, 1.0]), np.array([0.0, 1.0])
+
+    def fake_contact_evaluator(
+        _model_path: str | Path,
+        _state_trajectories: dict[str, np.ndarray],
+        _control_trajectories: dict[str, np.ndarray],
+        **kwargs,
+    ):
+        assert kwargs["contact_model"] == CONTACT_MODEL_COMPLIANT_UNILATERAL
+        return np.array([1100.0, 1050.0]), np.array([120.0, 0.0]), np.array([0.0, 0.0])
+
+    summary = summarize_solved_ocp(
+        _FakeSolution(),
+        model_path=model_path,
+        requested_iterations=5,
+        n_phases=1,
+        merge_nodes_token="nodes",
+        peak_force_newtons=1100.0,
+        platform_mass_kg=80.0,
+        contact_model=CONTACT_MODEL_COMPLIANT_UNILATERAL,
+        total_duration_s=2.0,
+        com_evaluator=fake_com_evaluator,
+        contact_force_evaluator=fake_contact_evaluator,
+    )
+
+    assert summary.contact_model == CONTACT_MODEL_COMPLIANT_UNILATERAL
 
 
 def test_solve_ocp_runtime_summary_reports_missing_optional_dependency(tmp_path: Path) -> None:

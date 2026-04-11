@@ -30,7 +30,15 @@ def build_ocp_runtime_summary(
     """Attempt to instantiate the runtime OCP and summarize the result."""
 
     builder = VerticalJumpBioptimOcpBuilder(settings=settings)
-    model_path = builder.export_model(model_output_dir)
+    try:
+        model_path = builder.export_model(model_output_dir)
+    except (ImportError, ModuleNotFoundError) as exc:
+        dependency_name = getattr(exc, "name", None) or str(exc)
+        return OcpRuntimeSummary(
+            success=False,
+            message=f"Dependance optionnelle manquante pour construire l'OCP: {dependency_name}",
+            model_path=Path(model_output_dir) / "vertical_jumper_3segments.bioMod",
+        )
 
     try:
         ocp = builder.build_ocp(peak_force_newtons=peak_force_newtons, model_path=model_path)

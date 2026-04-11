@@ -11,7 +11,12 @@ from synchro_jump.optimization.explicit_platform import (
     solve_coupled_platform_dynamics_numeric,
 )
 from synchro_jump.optimization.force_profile import PlatformForceProfile
-from synchro_jump.optimization.problem import VerticalJumpOcpSettings
+from synchro_jump.optimization.problem import (
+    CONTACT_MODEL_COMPLIANT_UNILATERAL,
+    CONTACT_MODEL_RIGID_UNILATERAL,
+    VerticalJumpOcpSettings,
+    discrete_contact_models,
+)
 from synchro_jump.optimization.runtime_solution import (
     OcpSolveSummary,
     evaluate_contact_force_trajectory,
@@ -25,6 +30,8 @@ from synchro_jump.optimization.surrogate import estimate_takeoff_velocity_from_c
 __all__ = [
     "AthleteMorphology",
     "CoupledPlatformSolution",
+    "CONTACT_MODEL_COMPLIANT_UNILATERAL",
+    "CONTACT_MODEL_RIGID_UNILATERAL",
     "OcpRuntimeSummary",
     "OcpSolveSummary",
     "PlatformForceProfile",
@@ -33,6 +40,7 @@ __all__ = [
     "VerticalJumpOcpBlueprint",
     "VerticalJumpOcpSettings",
     "build_ocp_runtime_summary",
+    "discrete_contact_models",
     "evaluate_contact_force_trajectory",
     "evaluate_com_trajectory",
     "estimate_jump_apex_height",

@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from synchro_jump.optimization.bioptim_ocp import VerticalJumpBioptimOcpBuilder
-from synchro_jump.optimization.problem import VerticalJumpOcpSettings
+from synchro_jump.optimization.problem import (
+    CONTACT_MODEL_COMPLIANT_UNILATERAL,
+    CONTACT_MODEL_RIGID_UNILATERAL,
+    VerticalJumpOcpSettings,
+)
 
 
 def test_blueprint_uses_requested_predicted_height_objective() -> None:
@@ -25,7 +29,24 @@ def test_blueprint_uses_explicit_platform_dynamics_name() -> None:
     builder = VerticalJumpBioptimOcpBuilder()
     blueprint = builder.blueprint(peak_force_newtons=1100.0)
 
-    assert blueprint.dynamics_name == "TORQUE_DRIVEN_WITH_EXPLICIT_PLATFORM"
+    assert blueprint.dynamics_name == "TORQUE_DRIVEN_WITH_EXPLICIT_PLATFORM_RIGID_CONTACT"
+    assert blueprint.contact_model_name == "RIGID_UNILATERAL"
+
+
+def test_blueprint_can_switch_to_compliant_contact() -> None:
+    """The builder should expose the compliant unilateral contact option."""
+
+    builder = VerticalJumpBioptimOcpBuilder(
+        VerticalJumpOcpSettings(
+            athlete_mass_kg=50.0,
+            contact_model=CONTACT_MODEL_COMPLIANT_UNILATERAL,
+        )
+    )
+    blueprint = builder.blueprint(peak_force_newtons=1100.0)
+
+    assert builder.settings.contact_model == CONTACT_MODEL_COMPLIANT_UNILATERAL
+    assert blueprint.dynamics_name == "TORQUE_DRIVEN_WITH_EXPLICIT_PLATFORM_COMPLIANT_CONTACT"
+    assert blueprint.contact_model_name == "COMPLIANT_UNILATERAL"
 
 
 def test_blueprint_contact_target_ends_with_zero_or_positive_force() -> None:

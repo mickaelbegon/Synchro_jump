@@ -19,6 +19,10 @@ from synchro_jump.optimization import (
     estimate_takeoff_velocity_from_contact_profile,
     solve_ocp_runtime_summary,
 )
+from synchro_jump.optimization.problem import (
+    CONTACT_MODEL_COMPLIANT_UNILATERAL,
+    CONTACT_MODEL_RIGID_UNILATERAL,
+)
 
 
 class SynchroJumpApp:
@@ -27,6 +31,11 @@ class SynchroJumpApp:
     default_solve_iterations = 25
     max_solve_iterations = 100
     animation_delay_ms = 80
+    contact_model_labels = {
+        CONTACT_MODEL_RIGID_UNILATERAL: "Rigide unilateral",
+        CONTACT_MODEL_COMPLIANT_UNILATERAL: "Compliant unilateral",
+    }
+    contact_model_by_label = {label: key for key, label in contact_model_labels.items()}
 
     def __init__(self, root: tk.Tk) -> None:
         """Create the main window and its interactive controls."""
@@ -38,6 +47,9 @@ class SynchroJumpApp:
         self.base_settings = VerticalJumpBioptimOcpBuilder().settings
         self.force_var = tk.DoubleVar(value=1100.0)
         self.mass_var = tk.DoubleVar(value=float(self.base_settings.athlete_mass_kg))
+        self.contact_model_var = tk.StringVar(
+            value=self.contact_model_labels[self.base_settings.contact_model]
+        )
         self.solve_iterations_var = tk.IntVar(value=self.default_solve_iterations)
         self.animation_frame_var = tk.IntVar(value=0)
         self.status_var = tk.StringVar()
@@ -94,6 +106,16 @@ class SynchroJumpApp:
             length=260,
         )
         self.mass_scale.pack(fill=tk.X, pady=(0, 12))
+
+        ttk.Label(parent, text="Modele de contact").pack(anchor=tk.W)
+        self.contact_model_combo = ttk.Combobox(
+            parent,
+            state="readonly",
+            textvariable=self.contact_model_var,
+            values=tuple(self.contact_model_labels.values()),
+        )
+        self.contact_model_combo.bind("<<ComboboxSelected>>", self._on_contact_model_change)
+        self.contact_model_combo.pack(fill=tk.X, pady=(0, 12))
 
         ttk.Label(parent, text="Iterations solveur").pack(anchor=tk.W)
         self.solve_iterations_scale = tk.Scale(
@@ -167,6 +189,12 @@ class SynchroJumpApp:
 
         self.refresh()
 
+    def _on_contact_model_change(self, _event=None) -> None:
+        """Invalidate runtime results when the contact model changes."""
+
+        self._invalidate_runtime_results()
+        self.refresh()
+
     def _invalidate_runtime_results(self) -> None:
         """Drop runtime build/solve summaries tied to the previous sliders."""
 
@@ -181,7 +209,10 @@ class SynchroJumpApp:
     def current_settings(self):
         """Return the OCP settings associated with the current sliders."""
 
-        return self.base_settings.__class__(athlete_mass_kg=int(self.mass_var.get()))
+        return self.base_settings.__class__(
+            athlete_mass_kg=int(self.mass_var.get()),
+            contact_model=self.current_contact_model_key(),
+        )
 
     def current_force_newtons(self) -> float:
         """Return the current platform-force slider value."""
@@ -192,6 +223,11 @@ class SynchroJumpApp:
         """Return the requested number of IPOPT iterations."""
 
         return int(self.solve_iterations_var.get())
+
+    def current_contact_model_key(self) -> str:
+        """Return the selected contact-model key."""
+
+        return self.contact_model_by_label[self.contact_model_var.get()]
 
     def current_animation_frame(self) -> int:
         """Return the currently displayed animation frame index."""
@@ -240,6 +276,8 @@ class SynchroJumpApp:
                 "Configuration OCP:\n"
                 f"- objectif: {blueprint.objective_name}\n"
                 f"- dynamique: {blueprint.dynamics_name}\n"
+                f"- modele contact: {self.contact_model_var.get()}\n"
+                f"- label contact: {blueprint.contact_model_name}\n"
                 f"- contact physique: k={self.base_settings.contact_stiffness_n_per_m:.0f} N/m, "
                 f"c={self.base_settings.contact_damping_n_s_per_m:.0f} N.s/m\n"
                 "- decollage impose: force contact finale = 0 N"
@@ -303,7 +341,7 @@ class SynchroJumpApp:
                     self.runtime_solution.contact_force_trajectory_n,
                     color="#0b6e4f",
                     linewidth=2.4,
-                    label="Contact physique runtime",
+                    label=f"Contact runtime ({self.contact_model_var.get()})",
                 )
             if self.runtime_solution.final_time_s is not None:
                 self.force_axis.axvline(
@@ -534,6 +572,7 @@ class SynchroJumpApp:
             self.solution_status = (
                 "Resolution runtime:\n"
                 f"- succes: oui\n"
+                f"- modele contact: {self.contact_model_var.get()}\n"
                 f"- iterations demandees: {summary.requested_iterations}\n"
                 f"- statut solveur: {summary.solver_status}\n"
                 f"- temps final: {summary.final_time_s:.2f} s\n"

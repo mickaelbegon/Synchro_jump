@@ -13,8 +13,13 @@ from synchro_jump.optimization.contact import PlatformInteractionModel
 from synchro_jump.optimization.explicit_platform import (
     platform_actuation_force,
     predicted_apex_height_expression_numeric,
+    solve_coupled_platform_dynamics_numeric,
 )
-from synchro_jump.optimization.problem import VerticalJumpOcpSettings
+from synchro_jump.optimization.problem import (
+    CONTACT_MODEL_COMPLIANT_UNILATERAL,
+    CONTACT_MODEL_RIGID_UNILATERAL,
+    VerticalJumpOcpSettings,
+)
 
 
 @dataclass(frozen=True)
@@ -37,6 +42,7 @@ class OcpSolveSummary:
     predicted_apex_height_m: float | None = None
     final_contact_force_n: float | None = None
     takeoff_condition_satisfied: bool | None = None
+    contact_model: str = ""
     time: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
     state_trajectories: dict[str, np.ndarray] = field(default_factory=dict)
     control_trajectories: dict[str, np.ndarray] = field(default_factory=dict)
@@ -72,20 +78,18 @@ def _solution_scalar(value: Any) -> float | None:
     return float(array.reshape((-1,))[0])
 
 
-def _control_column(controls: np.ndarray, node_index: int) -> np.ndarray:
-    """Return one control column, reusing the last valid column when needed."""
+def _contact_index_from_name(contact_names: tuple[str, ...], contact_name: str) -> int:
+    """Resolve one rigid-contact index from one exported contact name."""
 
-    if controls.ndim != 2 or controls.shape[1] == 0:
-        return np.zeros((controls.shape[0] if controls.ndim == 2 else 0,), dtype=float)
+    names = list(contact_names)
+    if contact_name in names:
+        return names.index(contact_name)
 
-    clamped_index = min(node_index, controls.shape[1] - 1)
-    column = np.asarray(controls[:, clamped_index], dtype=float).copy()
-    if np.any(~np.isfinite(column)):
-        fallback_index = min(max(clamped_index - 1, 0), controls.shape[1] - 1)
-        fallback = np.asarray(controls[:, fallback_index], dtype=float)
-        column[~np.isfinite(column)] = fallback[~np.isfinite(column)]
-        column = np.nan_to_num(column, nan=0.0)
-    return column
+    axis_matches = [index for index, name in enumerate(names) if name.startswith(f"{contact_name}_")]
+    if len(axis_matches) == 1:
+        return axis_matches[0]
+
+    raise ValueError(f"Unknown contact name: {contact_name}")
 
 
 def evaluate_com_trajectory(
@@ -117,24 +121,19 @@ def evaluate_com_trajectory(
     return heights, vertical_velocities
 
 
-def evaluate_contact_force_trajectory(
-    model_path: str | Path,
+def _evaluate_compliant_contact_force_trajectory(
     state_trajectories: dict[str, np.ndarray],
-    control_trajectories: dict[str, np.ndarray],
     *,
     time: np.ndarray,
     peak_force_newtons: float,
     platform_mass_kg: float,
-    contact_stiffness_n_per_m: float = 30000.0,
-    contact_damping_n_s_per_m: float = 1500.0,
-    total_duration_s: float = 2.0,
-    taper_duration_s: float = 0.3,
-    gravity: float = 9.81,
+    contact_stiffness_n_per_m: float,
+    contact_damping_n_s_per_m: float,
+    total_duration_s: float,
+    taper_duration_s: float,
+    gravity: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Evaluate actuation, compliant contact force, and platform acceleration trajectories."""
-
-    _ = model_path
-    _ = control_trajectories
+    """Evaluate the compliant contact interaction along one trajectory."""
 
     q_trajectory = _merge_split_states(state_trajectories, "q")
     qdot_trajectory = _merge_split_states(state_trajectories, "qdot")
@@ -173,6 +172,128 @@ def evaluate_contact_force_trajectory(
     return platform_force_trajectory, contact_force_trajectory, platform_acceleration_trajectory
 
 
+def _evaluate_rigid_contact_force_trajectory(
+    model_path: str | Path,
+    state_trajectories: dict[str, np.ndarray],
+    control_trajectories: dict[str, np.ndarray],
+    *,
+    time: np.ndarray,
+    peak_force_newtons: float,
+    platform_mass_kg: float,
+    total_duration_s: float,
+    taper_duration_s: float,
+    gravity: float,
+    contact_name: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Evaluate the rigid coupled contact interaction along one trajectory."""
+
+    from casadi import DM
+    from bioptim import BiorbdModel
+
+    model = BiorbdModel(str(Path(model_path)))
+    q_trajectory = _merge_split_states(state_trajectories, "q")
+    qdot_trajectory = _merge_split_states(state_trajectories, "qdot")
+    tau_joints_trajectory = np.asarray(control_trajectories["tau_joints"], dtype=float)
+
+    contact_index = _contact_index_from_name(model.contact_names, contact_name)
+    contact_axis = model.rigid_contact_index(contact_index)[0]
+    contact_acceleration = model.rigid_contact_acceleration(contact_index, contact_axis)
+    mass_matrix_fun = model.mass_matrix()
+    nonlinear_effects_fun = model.non_linear_effects()
+
+    platform_force_trajectory = np.zeros(time.shape[0], dtype=float)
+    contact_force_trajectory = np.zeros(time.shape[0], dtype=float)
+    platform_acceleration_trajectory = np.zeros(time.shape[0], dtype=float)
+
+    for node_index, current_time in enumerate(time):
+        q_column = DM(q_trajectory[:, node_index].reshape((-1, 1)))
+        qdot_column = DM(qdot_trajectory[:, node_index].reshape((-1, 1)))
+        zero_qddot = DM.zeros(model.nb_q, 1)
+
+        contact_bias = float(np.asarray(contact_acceleration(q_column, qdot_column, zero_qddot, DM()), dtype=float))
+        contact_jacobian = np.zeros((1, model.nb_q), dtype=float)
+        for dof_index in range(model.nb_q):
+            basis_qddot = DM.zeros(model.nb_q, 1)
+            basis_qddot[dof_index] = 1.0
+            basis_acceleration = float(
+                np.asarray(contact_acceleration(q_column, qdot_column, basis_qddot, DM()), dtype=float)
+            )
+            contact_jacobian[0, dof_index] = basis_acceleration - contact_bias
+
+        tau_joints = np.asarray(control_trajectories["tau_joints"][:, min(node_index, tau_joints_trajectory.shape[1] - 1)])
+        tau_joints = np.nan_to_num(tau_joints.astype(float), nan=0.0)
+        tau = np.concatenate((np.zeros(model.nb_root, dtype=float), tau_joints))
+        platform_force = platform_actuation_force(
+            float(current_time),
+            peak_force_newtons=peak_force_newtons,
+            total_duration_s=total_duration_s,
+            taper_duration_s=taper_duration_s,
+        )
+        coupled_solution = solve_coupled_platform_dynamics_numeric(
+            mass_matrix=np.asarray(mass_matrix_fun(q_column, DM()), dtype=float),
+            nonlinear_effects=np.asarray(nonlinear_effects_fun(q_column, qdot_column, DM()), dtype=float),
+            tau=tau,
+            contact_jacobian=contact_jacobian,
+            contact_bias=contact_bias,
+            platform_force_newtons=platform_force,
+            platform_mass_kg=platform_mass_kg,
+            gravity=gravity,
+        )
+        platform_force_trajectory[node_index] = platform_force
+        contact_force_trajectory[node_index] = coupled_solution.contact_force
+        platform_acceleration_trajectory[node_index] = coupled_solution.platform_acceleration
+
+    return platform_force_trajectory, contact_force_trajectory, platform_acceleration_trajectory
+
+
+def evaluate_contact_force_trajectory(
+    model_path: str | Path,
+    state_trajectories: dict[str, np.ndarray],
+    control_trajectories: dict[str, np.ndarray],
+    *,
+    time: np.ndarray,
+    peak_force_newtons: float,
+    platform_mass_kg: float,
+    contact_model: str = CONTACT_MODEL_RIGID_UNILATERAL,
+    contact_stiffness_n_per_m: float = 30000.0,
+    contact_damping_n_s_per_m: float = 1500.0,
+    total_duration_s: float = 2.0,
+    taper_duration_s: float = 0.3,
+    gravity: float = 9.81,
+    contact_name: str = "platform_contact",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Evaluate the selected contact interaction along one trajectory."""
+
+    if contact_model == CONTACT_MODEL_RIGID_UNILATERAL:
+        return _evaluate_rigid_contact_force_trajectory(
+            model_path,
+            state_trajectories,
+            control_trajectories,
+            time=time,
+            peak_force_newtons=peak_force_newtons,
+            platform_mass_kg=platform_mass_kg,
+            total_duration_s=total_duration_s,
+            taper_duration_s=taper_duration_s,
+            gravity=gravity,
+            contact_name=contact_name,
+        )
+
+    if contact_model == CONTACT_MODEL_COMPLIANT_UNILATERAL:
+        return _evaluate_compliant_contact_force_trajectory(
+            state_trajectories,
+            time=time,
+            peak_force_newtons=peak_force_newtons,
+            platform_mass_kg=platform_mass_kg,
+            contact_stiffness_n_per_m=contact_stiffness_n_per_m,
+            contact_damping_n_s_per_m=contact_damping_n_s_per_m,
+            total_duration_s=total_duration_s,
+            taper_duration_s=taper_duration_s,
+            gravity=gravity,
+        )
+
+    raise ValueError(f"Unsupported contact model: {contact_model}")
+
+
 def summarize_solved_ocp(
     solution: Any,
     *,
@@ -182,16 +303,15 @@ def summarize_solved_ocp(
     merge_nodes_token: Any,
     peak_force_newtons: float,
     platform_mass_kg: float,
+    contact_model: str = CONTACT_MODEL_RIGID_UNILATERAL,
     contact_stiffness_n_per_m: float = 30000.0,
     contact_damping_n_s_per_m: float = 1500.0,
     total_duration_s: float = 2.0,
     taper_duration_s: float = 0.3,
     gravity: float = 9.81,
+    contact_name: str = "platform_contact",
     com_evaluator: Callable[[str | Path, dict[str, np.ndarray]], tuple[np.ndarray, np.ndarray]] = evaluate_com_trajectory,
-    contact_force_evaluator: Callable[
-        [str | Path, dict[str, np.ndarray], dict[str, np.ndarray]],
-        tuple[np.ndarray, np.ndarray, np.ndarray],
-    ] | None = None,
+    contact_force_evaluator: Callable[..., tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None,
 ) -> OcpSolveSummary:
     """Convert one runtime solution object into one GUI-friendly summary."""
 
@@ -214,11 +334,13 @@ def summarize_solved_ocp(
             time=time,
             peak_force_newtons=peak_force_newtons,
             platform_mass_kg=platform_mass_kg,
+            contact_model=contact_model,
             contact_stiffness_n_per_m=contact_stiffness_n_per_m,
             contact_damping_n_s_per_m=contact_damping_n_s_per_m,
             total_duration_s=total_duration_s,
             taper_duration_s=taper_duration_s,
             gravity=gravity,
+            contact_name=contact_name,
         )
     )
 
@@ -260,6 +382,7 @@ def summarize_solved_ocp(
         takeoff_condition_satisfied=(
             bool(abs(float(contact_force_trajectory_n[-1])) <= 1.0) if contact_force_trajectory_n.size else None
         ),
+        contact_model=contact_model,
         time=time,
         state_trajectories=state_trajectories,
         control_trajectories=control_trajectories,
@@ -282,7 +405,17 @@ def solve_ocp_runtime_summary(
     """Build and solve the runtime OCP, then summarize the result."""
 
     builder = VerticalJumpBioptimOcpBuilder(settings=settings)
-    model_path = builder.export_model(model_output_dir)
+    try:
+        model_path = builder.export_model(model_output_dir)
+    except (ImportError, ModuleNotFoundError) as exc:
+        dependency_name = getattr(exc, "name", None) or str(exc)
+        return OcpSolveSummary(
+            success=False,
+            message=f"Dependance optionnelle manquante pour resoudre l'OCP: {dependency_name}",
+            model_path=Path(model_output_dir) / "vertical_jumper_3segments.bioMod",
+            requested_iterations=maximum_iterations,
+            contact_model=settings.contact_model,
+        )
 
     try:
         from bioptim import SolutionMerge, Solver
@@ -293,6 +426,7 @@ def solve_ocp_runtime_summary(
             message=f"Dependance optionnelle manquante pour resoudre l'OCP: {dependency_name}",
             model_path=model_path,
             requested_iterations=maximum_iterations,
+            contact_model=settings.contact_model,
         )
 
     try:
@@ -309,6 +443,7 @@ def solve_ocp_runtime_summary(
             merge_nodes_token=SolutionMerge.NODES,
             peak_force_newtons=peak_force_newtons,
             platform_mass_kg=settings.platform_mass_kg,
+            contact_model=settings.contact_model,
             contact_stiffness_n_per_m=settings.contact_stiffness_n_per_m,
             contact_damping_n_s_per_m=settings.contact_damping_n_s_per_m,
             total_duration_s=settings.final_time_upper_bound_s,
@@ -320,6 +455,7 @@ def solve_ocp_runtime_summary(
             message=f"Dependance optionnelle manquante pour resoudre l'OCP: {dependency_name}",
             model_path=model_path,
             requested_iterations=maximum_iterations,
+            contact_model=settings.contact_model,
         )
     except RuntimeError as exc:
         return OcpSolveSummary(
@@ -327,6 +463,7 @@ def solve_ocp_runtime_summary(
             message=str(exc),
             model_path=model_path,
             requested_iterations=maximum_iterations,
+            contact_model=settings.contact_model,
         )
     except Exception as exc:  # pragma: no cover - runtime safety net
         return OcpSolveSummary(
@@ -334,4 +471,5 @@ def solve_ocp_runtime_summary(
             message=f"Echec de resolution de l'OCP: {exc}",
             model_path=model_path,
             requested_iterations=maximum_iterations,
+            contact_model=settings.contact_model,
         )

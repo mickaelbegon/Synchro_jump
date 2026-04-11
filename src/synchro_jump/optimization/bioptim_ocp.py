@@ -8,7 +8,11 @@ from pathlib import Path
 from synchro_jump.modeling import AthleteMorphology, PlanarJumperModelDefinition
 from synchro_jump.optimization.contact import PlatformInteractionModel
 from synchro_jump.optimization.force_profile import PlatformForceProfile
-from synchro_jump.optimization.problem import VerticalJumpOcpSettings
+from synchro_jump.optimization.problem import (
+    CONTACT_MODEL_COMPLIANT_UNILATERAL,
+    CONTACT_MODEL_RIGID_UNILATERAL,
+    VerticalJumpOcpSettings,
+)
 
 
 @dataclass(frozen=True)
@@ -20,6 +24,7 @@ class VerticalJumpOcpBlueprint:
     objective_name: str = "CUSTOM_PREDICTED_COM_HEIGHT"
     dynamics_name: str = "TORQUE_DRIVEN_WITH_EXPLICIT_PLATFORM"
     contact_name: str = "platform_contact"
+    contact_model_name: str = ""
     ode_solver_name: str = "RK4"
     control_type: str = "CONSTANT"
 
@@ -31,13 +36,27 @@ class VerticalJumpOcpBlueprint:
             peak_force_newtons=self.peak_force_newtons,
             total_duration=duration,
         )
-        interaction = PlatformInteractionModel(platform_mass_kg=self.settings.platform_mass_kg)
+        interaction = PlatformInteractionModel(
+            platform_mass_kg=self.settings.platform_mass_kg,
+            gravity=9.81,
+            contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
+            contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
+        )
+        initial_q = PlanarJumperModelDefinition(
+            morphology=AthleteMorphology(
+                height_m=self.settings.athlete_height_m,
+                mass_kg=self.settings.athlete_mass_kg,
+            )
+        ).initial_joint_configuration_rad
         targets = []
         for node_index in range(self.settings.n_shooting):
             time = duration * node_index / max(self.settings.n_shooting - 1, 1)
-            surrogate_contact = interaction.contact_force(
-                platform_actuation_force_newtons=profile.force_at(time),
-                platform_vertical_acceleration=0.0,
+            surrogate_contact = _contact_force_target_from_interaction(
+                interaction,
+                self.settings,
+                q_root_z_guess=initial_q[1],
+                qdot_root_z_guess=0.0,
+                platform_force=profile.force_at(time),
             )
             targets.append(max(surrogate_contact, 0.0))
         return tuple(targets)
@@ -93,6 +112,20 @@ def _constant_bounds_with_fixed_start(lower_bounds, upper_bounds, start_values):
     upper = np.asarray(upper_bounds, dtype=float).reshape((-1, 1))
     start = np.asarray(start_values, dtype=float).reshape((-1, 1))
     return np.hstack((start, lower, lower)), np.hstack((start, upper, upper))
+
+
+def _contact_index_from_name(model, contact_name: str) -> int:
+    """Resolve a rigid-contact index without relying on optional helpers."""
+
+    contact_names = list(model.contact_names)
+    if contact_name in contact_names:
+        return contact_names.index(contact_name)
+
+    axis_matches = [index for index, name in enumerate(contact_names) if name.startswith(f"{contact_name}_")]
+    if len(axis_matches) == 1:
+        return axis_matches[0]
+
+    raise ValueError(f"Unknown contact name: {contact_name}")
 
 
 def _symbolic_platform_force(time, peak_force_newtons: float, total_duration_s: float, taper_duration_s: float):
@@ -152,6 +185,52 @@ def _symbolic_compliant_contact_force(
     )
 
 
+def _coupled_platform_dynamics_symbolic(
+    model,
+    q,
+    qdot,
+    tau_joints,
+    parameters,
+    *,
+    contact_index: int,
+    platform_force_newtons,
+    platform_mass_kg: float,
+    gravity: float,
+    cx_type,
+):
+    """Solve the rigid coupled jumper-platform dynamics symbolically."""
+
+    from casadi import horzcat, jacobian, solve, substitute, vertcat
+
+    nq = q.shape[0]
+    tau = vertcat(cx_type.zeros(model.nb_root, 1), tau_joints)
+    zero_qddot = cx_type.zeros(nq, 1)
+    qddot_symbol = cx_type.sym("qddot_contact", nq, 1)
+    contact_axis = model.rigid_contact_index(contact_index)[0]
+    contact_acceleration = model.rigid_contact_acceleration(contact_index, contact_axis)
+    contact_acceleration_expression = contact_acceleration(q, qdot, qddot_symbol, parameters)
+    contact_jacobian = substitute(jacobian(contact_acceleration_expression, qddot_symbol), qddot_symbol, zero_qddot)
+    contact_bias = contact_acceleration(q, qdot, zero_qddot, parameters)
+    mass_matrix = model.mass_matrix()(q, parameters)
+    nonlinear_effects = model.non_linear_effects()(q, qdot, parameters)
+
+    augmented_matrix = vertcat(
+        horzcat(mass_matrix, -contact_jacobian.T, cx_type.zeros(nq, 1)),
+        horzcat(contact_jacobian, cx_type.zeros(1, 1), -cx_type.ones(1, 1)),
+        horzcat(cx_type.zeros(1, nq), cx_type.ones(1, 1), platform_mass_kg * cx_type.ones(1, 1)),
+    )
+    rhs = vertcat(
+        tau - nonlinear_effects,
+        -contact_bias,
+        platform_force_newtons - platform_mass_kg * gravity,
+    )
+    solution = solve(augmented_matrix, rhs)
+    qddot = solution[:nq]
+    contact_force = solution[nq]
+    platform_acceleration = solution[nq + 1]
+    return qddot, contact_force, platform_acceleration
+
+
 def _predicted_apex_height(controller, gravity: float = 9.81):
     """Custom Mayer objective based on CoM height and vertical velocity."""
 
@@ -166,22 +245,102 @@ _predicted_apex_height.__name__ = "predicted_apex_height"
 
 def _contact_force_penalty(
     controller,
+    contact_model: str,
+    contact_name: str,
+    peak_force_newtons: float,
+    total_duration_s: float,
+    taper_duration_s: float,
+    platform_mass_kg: float,
+    gravity: float,
     contact_stiffness_n_per_m: float,
     contact_damping_n_s_per_m: float,
 ):
-    """Return the compliant contact force used in custom constraints."""
+    """Return the selected contact force used in custom constraints."""
 
-    return _symbolic_compliant_contact_force(
-        controller.q,
-        controller.qdot,
-        platform_position=controller.states["platform_position"].cx,
-        platform_velocity=controller.states["platform_velocity"].cx,
-        contact_stiffness_n_per_m=contact_stiffness_n_per_m,
-        contact_damping_n_s_per_m=contact_damping_n_s_per_m,
-    )
+    if contact_model == CONTACT_MODEL_RIGID_UNILATERAL:
+        _, contact_force, _ = _coupled_platform_dynamics_symbolic(
+            controller.model,
+            controller.q,
+            controller.qdot,
+            controller.tau,
+            controller.parameters.cx,
+            contact_index=_contact_index_from_name(controller.model, contact_name),
+            platform_force_newtons=_symbolic_platform_force(
+                controller.time.cx,
+                peak_force_newtons=peak_force_newtons,
+                total_duration_s=total_duration_s,
+                taper_duration_s=taper_duration_s,
+            ),
+            platform_mass_kg=platform_mass_kg,
+            gravity=gravity,
+            cx_type=controller.cx,
+        )
+        return contact_force
+
+    if contact_model == CONTACT_MODEL_COMPLIANT_UNILATERAL:
+        return _symbolic_compliant_contact_force(
+            controller.q,
+            controller.qdot,
+            platform_position=controller.states["platform_position"].cx,
+            platform_velocity=controller.states["platform_velocity"].cx,
+            contact_stiffness_n_per_m=contact_stiffness_n_per_m,
+            contact_damping_n_s_per_m=contact_damping_n_s_per_m,
+        )
+
+    raise ValueError(f"Unsupported contact model: {contact_model}")
 
 
 _contact_force_penalty.__name__ = "contact_force_penalty"
+
+
+def _contact_force_target_from_interaction(
+    interaction: PlatformInteractionModel,
+    settings: VerticalJumpOcpSettings,
+    q_root_z_guess: float,
+    qdot_root_z_guess: float,
+    platform_force: float,
+    *,
+    platform_position_guess: float = 0.0,
+    platform_velocity_guess: float = 0.0,
+) -> float:
+    """Return one GUI surrogate contact force for the selected contact mode."""
+
+    if settings.contact_model == CONTACT_MODEL_RIGID_UNILATERAL:
+        surrogate_contact = interaction.contact_force(
+            platform_actuation_force_newtons=platform_force,
+            platform_vertical_acceleration=0.0,
+        )
+        return max(surrogate_contact, 0.0)
+
+    if settings.contact_model == CONTACT_MODEL_COMPLIANT_UNILATERAL:
+        return interaction.compliant_contact_force(
+            platform_position_m=platform_position_guess,
+            platform_velocity_m_s=platform_velocity_guess,
+            foot_position_m=q_root_z_guess,
+            foot_velocity_m_s=qdot_root_z_guess,
+        )
+
+    raise ValueError(f"Unsupported contact model: {settings.contact_model}")
+
+
+def _contact_model_dynamics_name(contact_model: str) -> str:
+    """Return a user-facing dynamic name for one contact model."""
+
+    if contact_model == CONTACT_MODEL_RIGID_UNILATERAL:
+        return "TORQUE_DRIVEN_WITH_EXPLICIT_PLATFORM_RIGID_CONTACT"
+    if contact_model == CONTACT_MODEL_COMPLIANT_UNILATERAL:
+        return "TORQUE_DRIVEN_WITH_EXPLICIT_PLATFORM_COMPLIANT_CONTACT"
+    raise ValueError(f"Unsupported contact model: {contact_model}")
+
+
+def _contact_model_label(contact_model: str) -> str:
+    """Return a compact user-facing label for one contact model."""
+
+    if contact_model == CONTACT_MODEL_RIGID_UNILATERAL:
+        return "RIGID_UNILATERAL"
+    if contact_model == CONTACT_MODEL_COMPLIANT_UNILATERAL:
+        return "COMPLIANT_UNILATERAL"
+    raise ValueError(f"Unsupported contact model: {contact_model}")
 
 
 def _configure_explicit_platform_dynamics(
@@ -193,6 +352,8 @@ def _configure_explicit_platform_dynamics(
     taper_duration_s: float,
     platform_mass_kg: float,
     gravity: float,
+    contact_model: str,
+    contact_name: str,
     contact_stiffness_n_per_m: float,
     contact_damping_n_s_per_m: float,
     numerical_data_timeseries=None,
@@ -232,6 +393,8 @@ def _configure_explicit_platform_dynamics(
         taper_duration_s=taper_duration_s,
         platform_mass_kg=platform_mass_kg,
         gravity=gravity,
+        contact_model=contact_model,
+        contact_name=contact_name,
         contact_stiffness_n_per_m=contact_stiffness_n_per_m,
         contact_damping_n_s_per_m=contact_damping_n_s_per_m,
     )
@@ -251,6 +414,8 @@ def _explicit_platform_dynamics(
     taper_duration_s: float,
     platform_mass_kg: float,
     gravity: float,
+    contact_model: str,
+    contact_name: str,
     contact_stiffness_n_per_m: float,
     contact_damping_n_s_per_m: float,
 ):
@@ -264,28 +429,46 @@ def _explicit_platform_dynamics(
 
     q, qdot, tau_joints, platform_position, platform_velocity = _split_q_vectors(nlp, states, controls)
     dq = DynamicsFunctions.compute_qdot(nlp, q, qdot)
-    contact_force = _symbolic_compliant_contact_force(
-        q,
-        qdot,
-        platform_position=platform_position,
-        platform_velocity=platform_velocity,
-        contact_stiffness_n_per_m=contact_stiffness_n_per_m,
-        contact_damping_n_s_per_m=contact_damping_n_s_per_m,
-    )
-    tau = vertcat(nlp.cx.zeros(nlp.model.nb_root, 1), tau_joints)
-    contact_generalized_force = nlp.cx.zeros(nlp.model.nb_q, 1)
-    contact_generalized_force[1] = contact_force
-    qddot = solve(
-        nlp.model.mass_matrix()(q, parameters),
-        tau + contact_generalized_force - nlp.model.non_linear_effects()(q, qdot, parameters),
-    )
     platform_force_newtons = _symbolic_platform_force(
         time,
         peak_force_newtons=peak_force_newtons,
         total_duration_s=total_duration_s,
         taper_duration_s=taper_duration_s,
     )
-    platform_acceleration = (platform_force_newtons - platform_mass_kg * gravity - contact_force) / platform_mass_kg
+
+    if contact_model == CONTACT_MODEL_RIGID_UNILATERAL:
+        qddot, _, platform_acceleration = _coupled_platform_dynamics_symbolic(
+            nlp.model,
+            q,
+            qdot,
+            tau_joints,
+            parameters,
+            contact_index=_contact_index_from_name(nlp.model, contact_name),
+            platform_force_newtons=platform_force_newtons,
+            platform_mass_kg=platform_mass_kg,
+            gravity=gravity,
+            cx_type=nlp.cx,
+        )
+    elif contact_model == CONTACT_MODEL_COMPLIANT_UNILATERAL:
+        contact_force = _symbolic_compliant_contact_force(
+            q,
+            qdot,
+            platform_position=platform_position,
+            platform_velocity=platform_velocity,
+            contact_stiffness_n_per_m=contact_stiffness_n_per_m,
+            contact_damping_n_s_per_m=contact_damping_n_s_per_m,
+        )
+        tau = vertcat(nlp.cx.zeros(nlp.model.nb_root, 1), tau_joints)
+        contact_generalized_force = nlp.cx.zeros(nlp.model.nb_q, 1)
+        contact_generalized_force[1] = contact_force
+        qddot = solve(
+            nlp.model.mass_matrix()(q, parameters),
+            tau + contact_generalized_force - nlp.model.non_linear_effects()(q, qdot, parameters),
+        )
+        platform_acceleration = (platform_force_newtons - platform_mass_kg * gravity - contact_force) / platform_mass_kg
+    else:
+        raise ValueError(f"Unsupported contact model: {contact_model}")
+
     dxdt = vertcat(
         dq[: nlp.model.nb_root],
         dq[nlp.model.nb_root :],
@@ -310,7 +493,12 @@ class VerticalJumpBioptimOcpBuilder:
 
         if peak_force_newtons not in self.settings.force_slider_values_newtons:
             raise ValueError("peak_force_newtons must match one slider value")
-        return VerticalJumpOcpBlueprint(settings=self.settings, peak_force_newtons=peak_force_newtons)
+        return VerticalJumpOcpBlueprint(
+            settings=self.settings,
+            peak_force_newtons=peak_force_newtons,
+            dynamics_name=_contact_model_dynamics_name(self.settings.contact_model),
+            contact_model_name=_contact_model_label(self.settings.contact_model),
+        )
 
     def export_model(self, output_dir: str | Path) -> Path:
         """Export the reduced jumper model to one `.bioMod` file."""
@@ -367,22 +555,23 @@ class VerticalJumpBioptimOcpBuilder:
         )
 
         constraints = ConstraintList()
-        constraints.add(
-            _contact_force_penalty,
-            node=Node.ALL_SHOOTING,
-            min_bound=0.0,
-            max_bound=5000.0,
-            contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
-            contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
-        )
-        constraints.add(
-            _contact_force_penalty,
-            node=Node.END,
-            min_bound=0.0,
-            max_bound=0.0,
-            contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
-            contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
-        )
+        for node in (Node.ALL_SHOOTING, Node.END):
+            bounds = (0.0, 5000.0) if node == Node.ALL_SHOOTING else (0.0, 0.0)
+            constraints.add(
+                _contact_force_penalty,
+                node=node,
+                min_bound=bounds[0],
+                max_bound=bounds[1],
+                contact_model=self.settings.contact_model,
+                contact_name=blueprint.contact_name,
+                peak_force_newtons=peak_force_newtons,
+                total_duration_s=self.settings.final_time_upper_bound_s,
+                taper_duration_s=0.3,
+                platform_mass_kg=self.settings.platform_mass_kg,
+                gravity=9.81,
+                contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
+                contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
+            )
         constraints.add(
             ConstraintFcn.TIME_CONSTRAINT,
             node=Node.END,
@@ -401,6 +590,8 @@ class VerticalJumpBioptimOcpBuilder:
             taper_duration_s=0.3,
             platform_mass_kg=self.settings.platform_mass_kg,
             gravity=9.81,
+            contact_model=self.settings.contact_model,
+            contact_name=blueprint.contact_name,
             contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
             contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
         )

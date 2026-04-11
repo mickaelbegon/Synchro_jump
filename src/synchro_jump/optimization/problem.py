@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+CONTACT_MODEL_RIGID_UNILATERAL = "rigid_unilateral"
+CONTACT_MODEL_COMPLIANT_UNILATERAL = "compliant_unilateral"
+
 
 def discrete_force_slider_values() -> tuple[int, ...]:
     """Return the admissible platform-force slider values."""
@@ -17,6 +20,12 @@ def discrete_mass_slider_values() -> tuple[int, ...]:
     return (40, 45, 50, 55)
 
 
+def discrete_contact_models() -> tuple[str, ...]:
+    """Return the supported athlete-platform contact models."""
+
+    return (CONTACT_MODEL_RIGID_UNILATERAL, CONTACT_MODEL_COMPLIANT_UNILATERAL)
+
+
 @dataclass(frozen=True)
 class VerticalJumpOcpSettings:
     """Static settings for the first version of the jump OCP."""
@@ -24,6 +33,7 @@ class VerticalJumpOcpSettings:
     platform_mass_kg: float = 80.0
     athlete_height_m: float = 1.60
     athlete_mass_kg: float = 50.0
+    contact_model: str = CONTACT_MODEL_RIGID_UNILATERAL
     contact_stiffness_n_per_m: float = 30000.0
     contact_damping_n_s_per_m: float = 1500.0
     tau_min_nm: float = -500.0
@@ -45,6 +55,8 @@ class VerticalJumpOcpSettings:
             raise ValueError("athlete_height_m must be strictly positive")
         if self.athlete_mass_kg not in self.mass_slider_values_kg:
             raise ValueError("athlete_mass_kg must match one slider value")
+        if self.contact_model not in discrete_contact_models():
+            raise ValueError("contact_model must match one supported contact mode")
         if self.contact_stiffness_n_per_m < 0.0:
             raise ValueError("contact_stiffness_n_per_m must stay non-negative")
         if self.contact_damping_n_s_per_m < 0.0:
