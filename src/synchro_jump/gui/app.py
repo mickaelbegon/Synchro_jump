@@ -53,6 +53,7 @@ class SynchroJumpApp:
         self.solve_iterations_var = tk.IntVar(value=self.default_solve_iterations)
         self.animation_frame_var = tk.IntVar(value=0)
         self.status_var = tk.StringVar()
+        self.busy_var = tk.StringVar(value="")
         self.export_status = ""
         self.build_status = ""
         self.solution_status = ""
@@ -63,6 +64,7 @@ class SynchroJumpApp:
 
         self.build_button = None
         self.solve_button = None
+        self.busy_label = None
         self.figure_widget = None
         self.force_axis = None
         self.pose_axis = None
@@ -137,6 +139,8 @@ class SynchroJumpApp:
         self.solve_button = ttk.Button(parent, text="Resoudre l'OCP", command=self.solve_ocp)
         self.solve_button.pack(fill=tk.X, pady=(0, 8))
         ttk.Button(parent, text="Exporter le modele", command=self.export_model).pack(fill=tk.X, pady=(0, 8))
+
+        self.busy_label = ttk.Label(parent, textvariable=self.busy_var, wraplength=300, justify=tk.LEFT)
 
         ttk.Label(parent, text="Animation trajectoire").pack(anchor=tk.W, pady=(12, 0))
         self.animation_scale = tk.Scale(
@@ -226,6 +230,21 @@ class SynchroJumpApp:
             self.build_button.configure(state=tk.DISABLED if self.ocp_is_built else tk.NORMAL)
         if self.solve_button is not None:
             self.solve_button.configure(state=tk.NORMAL if self.ocp_is_built else tk.DISABLED)
+
+    def _show_busy_indicator(self, message: str) -> None:
+        """Display one compact busy icon and message while runtime work is ongoing."""
+
+        self.busy_var.set(f"⌛ {message}")
+        if self.busy_label is not None and not self.busy_label.winfo_ismapped():
+            self.busy_label.pack(fill=tk.X, pady=(8, 8), before=self.animation_scale)
+        self.root.update_idletasks()
+
+    def _hide_busy_indicator(self) -> None:
+        """Hide the busy indicator after one runtime action completes."""
+
+        self.busy_var.set("")
+        if self.busy_label is not None and self.busy_label.winfo_ismapped():
+            self.busy_label.pack_forget()
 
     def current_settings(self):
         """Return the OCP settings associated with the current sliders."""
@@ -553,24 +572,28 @@ class SynchroJumpApp:
         """Attempt to instantiate the `bioptim` OCP for the current sliders."""
 
         self.runtime_solution = None
-        summary = build_ocp_runtime_summary(
-            settings=self.current_settings(),
-            peak_force_newtons=self.current_force_newtons(),
-        )
-        if summary.success:
-            self.build_status = (
-                "Construction runtime:\n"
-                f"- succes: oui\n"
-                f"- phases: {summary.n_phases}\n"
-                f"- etats: {', '.join(summary.state_names)}\n"
-                f"- controles: {', '.join(summary.control_names)}"
+        self._show_busy_indicator("Construction de l'OCP en cours")
+        try:
+            summary = build_ocp_runtime_summary(
+                settings=self.current_settings(),
+                peak_force_newtons=self.current_force_newtons(),
             )
-            self._set_ocp_built_state(True)
-        else:
-            self.build_status = f"Construction runtime:\n- succes: non\n- message: {summary.message}"
-            self._set_ocp_built_state(False)
-        self.solution_status = ""
-        self.refresh()
+            if summary.success:
+                self.build_status = (
+                    "Construction runtime:\n"
+                    f"- succes: oui\n"
+                    f"- phases: {summary.n_phases}\n"
+                    f"- etats: {', '.join(summary.state_names)}\n"
+                    f"- controles: {', '.join(summary.control_names)}"
+                )
+                self._set_ocp_built_state(True)
+            else:
+                self.build_status = f"Construction runtime:\n- succes: non\n- message: {summary.message}"
+                self._set_ocp_built_state(False)
+            self.solution_status = ""
+            self.refresh()
+        finally:
+            self._hide_busy_indicator()
 
     def solve_ocp(self) -> None:
         """Solve one quick runtime OCP and expose the trajectories in the GUI."""
@@ -586,34 +609,36 @@ class SynchroJumpApp:
             f"- en cours...\n- iterations max: {self.current_solver_iterations()}"
         )
         self.refresh()
-        self.root.update_idletasks()
-
-        summary = solve_ocp_runtime_summary(
-            settings=self.current_settings(),
-            peak_force_newtons=self.current_force_newtons(),
-            maximum_iterations=self.current_solver_iterations(),
-        )
-        if summary.success:
-            self.runtime_solution = summary
-            self.animation_frame_var.set(0)
-            self.animation_scale.configure(to=max(summary.time.size - 1, 0))
-            self.solution_status = (
-                "Resolution runtime:\n"
-                f"- succes: oui\n"
-                f"- modele contact: {self.contact_model_var.get()}\n"
-                f"- iterations demandees: {summary.requested_iterations}\n"
-                f"- statut solveur: {summary.solver_status}\n"
-                f"- temps final: {summary.final_time_s:.2f} s\n"
-                f"- force contact finale: {summary.final_contact_force_n:.2f} N\n"
-                f"- decollage respecte: {'oui' if summary.takeoff_condition_satisfied else 'non'}\n"
-                f"- apex predit: {summary.predicted_apex_height_m:.2f} m\n"
-                f"- temps solveur: {summary.solve_time_s:.2f} s"
+        self._show_busy_indicator("Resolution de l'OCP en cours")
+        try:
+            summary = solve_ocp_runtime_summary(
+                settings=self.current_settings(),
+                peak_force_newtons=self.current_force_newtons(),
+                maximum_iterations=self.current_solver_iterations(),
             )
-        else:
-            self.runtime_solution = None
-            self.animation_scale.configure(to=0)
-            self.solution_status = f"Resolution runtime:\n- succes: non\n- message: {summary.message}"
-        self.refresh()
+            if summary.success:
+                self.runtime_solution = summary
+                self.animation_frame_var.set(0)
+                self.animation_scale.configure(to=max(summary.time.size - 1, 0))
+                self.solution_status = (
+                    "Resolution runtime:\n"
+                    f"- succes: oui\n"
+                    f"- modele contact: {self.contact_model_var.get()}\n"
+                    f"- iterations demandees: {summary.requested_iterations}\n"
+                    f"- statut solveur: {summary.solver_status}\n"
+                    f"- temps final: {summary.final_time_s:.2f} s\n"
+                    f"- force contact finale: {summary.final_contact_force_n:.2f} N\n"
+                    f"- decollage respecte: {'oui' if summary.takeoff_condition_satisfied else 'non'}\n"
+                    f"- apex predit: {summary.predicted_apex_height_m:.2f} m\n"
+                    f"- temps solveur: {summary.solve_time_s:.2f} s"
+                )
+            else:
+                self.runtime_solution = None
+                self.animation_scale.configure(to=0)
+                self.solution_status = f"Resolution runtime:\n- succes: non\n- message: {summary.message}"
+            self.refresh()
+        finally:
+            self._hide_busy_indicator()
 
     def toggle_animation(self) -> None:
         """Start or pause the runtime trajectory animation."""
