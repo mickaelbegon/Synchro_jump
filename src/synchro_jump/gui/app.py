@@ -28,8 +28,8 @@ from synchro_jump.optimization.problem import (
 class SynchroJumpApp:
     """Tkinter application with sliders, figures, and jump-runtime summaries."""
 
-    default_solve_iterations = 25
-    max_solve_iterations = 100
+    default_solve_iterations = 1000
+    max_solve_iterations = 1000
     animation_delay_ms = 80
     contact_model_labels = {
         CONTACT_MODEL_RIGID_UNILATERAL: "Rigide unilateral",

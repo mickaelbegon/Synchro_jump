@@ -42,6 +42,7 @@ class VerticalJumpOcpSettings:
     final_time_lower_bound_s: float = 0.2
     n_shooting: int = 100
     rk4_substeps: int = 4
+    n_threads: int = 6
     initial_joint_flexion_deg: float = 100.0
     force_slider_values_newtons: tuple[int, ...] = field(default_factory=discrete_force_slider_values)
     mass_slider_values_kg: tuple[int, ...] = field(default_factory=discrete_mass_slider_values)
@@ -71,5 +72,7 @@ class VerticalJumpOcpSettings:
             raise ValueError("n_shooting must be strictly positive")
         if self.rk4_substeps <= 0:
             raise ValueError("rk4_substeps must be strictly positive")
+        if self.n_threads <= 0:
+            raise ValueError("n_threads must be strictly positive")
         if not self.force_slider_values_newtons:
             raise ValueError("force_slider_values_newtons cannot be empty")

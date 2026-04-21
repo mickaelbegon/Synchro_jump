@@ -410,7 +410,7 @@ def solve_ocp_runtime_summary(
     peak_force_newtons: float,
     *,
     model_output_dir: str | Path = "generated",
-    maximum_iterations: int = 5,
+    maximum_iterations: int = 1000,
     print_level: int = 0,
 ) -> OcpSolveSummary:
     """Build and solve the runtime OCP, then summarize the result."""
