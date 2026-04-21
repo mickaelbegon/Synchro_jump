@@ -3,15 +3,44 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
 
-from synchro_jump.optimization.bioptim_ocp import VerticalJumpBioptimOcpBuilder
+from synchro_jump.optimization.bioptim_ocp import (
+    VerticalJumpBioptimOcpBuilder,
+    _import_bioptim_build_api,
+)
 from synchro_jump.optimization.problem import (
     CONTACT_MODEL_COMPLIANT_UNILATERAL,
     CONTACT_MODEL_RIGID_UNILATERAL,
     VerticalJumpOcpSettings,
 )
+
+
+def _fake_bioptim_module(**extra_attributes):
+    """Return one fake `bioptim` module exposing the minimum build API."""
+
+    module = SimpleNamespace(
+        __version__="test",
+        BiorbdModel=object,
+        BoundsList=object,
+        ConstraintFcn=object,
+        ConstraintList=object,
+        ControlType=object,
+        InitialGuessList=object,
+        InterpolationType=object,
+        Node=object,
+        ObjectiveFcn=object,
+        ObjectiveList=object,
+        OdeSolver=object,
+        OptimalControlProgram=object,
+        PhaseDynamics=object,
+    )
+    for key, value in extra_attributes.items():
+        setattr(module, key, value)
+    return module
 
 
 def test_blueprint_uses_requested_predicted_height_objective() -> None:
@@ -66,6 +95,36 @@ def test_builder_rejects_non_slider_force_values() -> None:
 
     with pytest.raises(ValueError, match="slider value"):
         builder.blueprint(peak_force_newtons=975.0)
+
+
+def test_import_bioptim_build_api_accepts_legacy_dynamics(monkeypatch) -> None:
+    """The compatibility layer should still recognize the historical API."""
+
+    monkeypatch.setitem(sys.modules, "bioptim", _fake_bioptim_module(Dynamics=object))
+
+    api = _import_bioptim_build_api()
+
+    assert api["api_kind"] == "legacy"
+    assert api["Dynamics"] is object
+
+
+def test_import_bioptim_build_api_accepts_modern_dynamics_options(monkeypatch) -> None:
+    """The compatibility layer should accept the `bioptim>=3.4` API."""
+
+    monkeypatch.setitem(
+        sys.modules,
+        "bioptim",
+        _fake_bioptim_module(
+            DynamicsOptions=object,
+            ConfigureVariables=object,
+            StateDynamics=object,
+        ),
+    )
+
+    api = _import_bioptim_build_api()
+
+    assert api["api_kind"] == "modern"
+    assert api["DynamicsOptions"] is object
 
 
 def test_build_ocp_smoke_when_bioptim_is_available(tmp_path: Path) -> None:

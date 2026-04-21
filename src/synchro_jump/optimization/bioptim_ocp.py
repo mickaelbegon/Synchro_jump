@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
 
 from synchro_jump.modeling import AthleteMorphology, PlanarJumperModelDefinition
@@ -67,13 +68,12 @@ def _import_bioptim_build_api():
 
     import bioptim
 
-    required_names = (
+    common_names = (
         "BiorbdModel",
         "BoundsList",
         "ConstraintFcn",
         "ConstraintList",
         "ControlType",
-        "Dynamics",
         "InitialGuessList",
         "InterpolationType",
         "Node",
@@ -83,16 +83,41 @@ def _import_bioptim_build_api():
         "OptimalControlProgram",
         "PhaseDynamics",
     )
-    missing_names = [name for name in required_names if not hasattr(bioptim, name)]
+    missing_names = [name for name in common_names if not hasattr(bioptim, name)]
     if missing_names:
         version = getattr(bioptim, "__version__", "unknown")
         raise RuntimeError(
             "Version de bioptim non supportee pour cet OCP explicite: "
             f"{version}. Symboles manquants: {', '.join(missing_names)}. "
-            "Utilise l'environnement Conda du projet avec bioptim=3.2.1."
+            "Installe une version compatible de l'environnement Conda du projet."
         )
 
-    return {name: getattr(bioptim, name) for name in required_names}
+    api = {name: getattr(bioptim, name) for name in common_names}
+    if hasattr(bioptim, "Dynamics"):
+        api["api_kind"] = "legacy"
+        api["Dynamics"] = bioptim.Dynamics
+        return api
+
+    if hasattr(bioptim, "DynamicsOptions"):
+        modern_names = ("DynamicsOptions", "ConfigureVariables", "StateDynamics")
+        missing_modern_names = [name for name in modern_names if not hasattr(bioptim, name)]
+        if missing_modern_names:
+            version = getattr(bioptim, "__version__", "unknown")
+            raise RuntimeError(
+                "Version de bioptim non supportee pour cet OCP explicite: "
+                f"{version}. Symboles manquants: {', '.join(missing_modern_names)}."
+            )
+        api["api_kind"] = "modern"
+        api["DynamicsOptions"] = bioptim.DynamicsOptions
+        api["ConfigureVariables"] = bioptim.ConfigureVariables
+        api["StateDynamics"] = bioptim.StateDynamics
+        return api
+
+    version = getattr(bioptim, "__version__", "unknown")
+    raise RuntimeError(
+        "Version de bioptim non supportee pour cet OCP explicite: "
+        f"{version}. Symboles manquants: Dynamics ou DynamicsOptions."
+    )
 
 
 def _symbolic_positive_part(value):
@@ -117,7 +142,7 @@ def _constant_bounds_with_fixed_start(lower_bounds, upper_bounds, start_values):
 def _contact_index_from_name(model, contact_name: str) -> int:
     """Resolve a rigid-contact index without relying on optional helpers."""
 
-    contact_names = list(model.contact_names)
+    contact_names = list(_model_contact_names(model))
     if contact_name in contact_names:
         return contact_names.index(contact_name)
 
@@ -126,6 +151,36 @@ def _contact_index_from_name(model, contact_name: str) -> int:
         return axis_matches[0]
 
     raise ValueError(f"Unknown contact name: {contact_name}")
+
+
+def _model_dof_names(model) -> tuple[str, ...]:
+    """Return the model DoF names across supported `bioptim` APIs."""
+
+    if hasattr(model, "name_dofs"):
+        return tuple(model.name_dofs)
+    if hasattr(model, "name_dof"):
+        return tuple(model.name_dof)
+    raise AttributeError("The provided model does not expose degree-of-freedom names")
+
+
+def _model_contact_names(model) -> tuple[str, ...]:
+    """Return the rigid-contact names across supported `bioptim` APIs."""
+
+    if hasattr(model, "contact_names"):
+        return tuple(model.contact_names)
+    if hasattr(model, "rigid_contact_names"):
+        return tuple(model.rigid_contact_names)
+    raise AttributeError("The provided model does not expose rigid-contact names")
+
+
+def _model_contact_axis(model, contact_index: int) -> int:
+    """Return the unique vertical rigid-contact axis across supported APIs."""
+
+    if hasattr(model, "rigid_contact_index"):
+        return int(model.rigid_contact_index(contact_index)[0])
+    if hasattr(model, "rigid_contact_axes_index"):
+        return int(model.rigid_contact_axes_index(contact_index)[0])
+    raise AttributeError("The provided model does not expose rigid-contact axes")
 
 
 def _symbolic_platform_force(time, peak_force_newtons: float, total_duration_s: float, taper_duration_s: float):
@@ -153,16 +208,62 @@ def _split_q_vectors(nlp, states, controls):
     from bioptim import DynamicsFunctions
     from casadi import vertcat
 
-    q_roots = DynamicsFunctions.get(nlp.states["q_roots"], states)
-    q_joints = DynamicsFunctions.get(nlp.states["q_joints"], states)
-    qdot_roots = DynamicsFunctions.get(nlp.states["qdot_roots"], states)
-    qdot_joints = DynamicsFunctions.get(nlp.states["qdot_joints"], states)
+    q_roots = (
+        DynamicsFunctions.get(nlp.states["q_roots"], states)
+        if "q_roots" in nlp.states
+        else nlp.cx.zeros(nlp.model.nb_root, 1)
+    )
+    q_joints = (
+        DynamicsFunctions.get(nlp.states["q_joints"], states)
+        if "q_joints" in nlp.states
+        else DynamicsFunctions.get(nlp.states["q"], states)
+    )
+    qdot_roots = (
+        DynamicsFunctions.get(nlp.states["qdot_roots"], states)
+        if "qdot_roots" in nlp.states
+        else nlp.cx.zeros(nlp.model.nb_root, 1)
+    )
+    qdot_joints = (
+        DynamicsFunctions.get(nlp.states["qdot_joints"], states)
+        if "qdot_joints" in nlp.states
+        else DynamicsFunctions.get(nlp.states["qdot"], states)
+    )
     tau_joints = DynamicsFunctions.get(nlp.controls["tau_joints"], controls)
     platform_position = DynamicsFunctions.get(nlp.states["platform_position"], states)
     platform_velocity = DynamicsFunctions.get(nlp.states["platform_velocity"], states)
     q = vertcat(q_roots, q_joints)
     qdot = vertcat(qdot_roots, qdot_joints)
     return q, qdot, tau_joints, platform_position, platform_velocity
+
+
+def _controller_q_qdot_tau(controller):
+    """Return full generalized coordinates, velocities, and torques from one controller."""
+
+    from casadi import vertcat
+
+    states = controller.states
+    controls = controller.controls
+    cx = controller.cx
+    model = controller.model
+
+    if "q" in states:
+        q = states["q"].cx
+    else:
+        q_roots = states["q_roots"].cx if "q_roots" in states else cx.zeros(model.nb_root, 1)
+        q = vertcat(q_roots, states["q_joints"].cx)
+
+    if "qdot" in states:
+        qdot = states["qdot"].cx
+    else:
+        qdot_roots = states["qdot_roots"].cx if "qdot_roots" in states else cx.zeros(model.nb_root, 1)
+        qdot = vertcat(qdot_roots, states["qdot_joints"].cx)
+
+    if "tau" in controls:
+        tau = controls["tau"].cx
+    else:
+        tau = vertcat(cx.zeros(model.nb_root, 1), controls["tau_joints"].cx)
+
+    return q, qdot, tau
 
 
 def _symbolic_compliant_contact_force(
@@ -206,7 +307,7 @@ def _coupled_platform_dynamics_symbolic(
     tau = vertcat(cx_type.zeros(model.nb_root, 1), tau_joints)
     zero_qddot = cx_type.zeros(nq, 1)
     qddot_symbol = cx_type.sym("qddot_contact", nq, 1)
-    contact_axis = model.rigid_contact_index(contact_index)[0]
+    contact_axis = _model_contact_axis(model, contact_index)
     contact_acceleration = model.rigid_contact_acceleration(contact_index, contact_axis)
     contact_acceleration_expression = contact_acceleration(q, qdot, qddot_symbol, parameters)
     contact_jacobian = substitute(jacobian(contact_acceleration_expression, qddot_symbol), qddot_symbol, zero_qddot)
@@ -234,8 +335,9 @@ def _coupled_platform_dynamics_symbolic(
 def _predicted_apex_height(controller, gravity: float = 9.81):
     """Custom Mayer objective based on CoM height and vertical velocity."""
 
-    com = controller.model.center_of_mass()(controller.q, controller.parameters.cx)
-    com_velocity = controller.model.center_of_mass_velocity()(controller.q, controller.qdot, controller.parameters.cx)
+    q, qdot, _ = _controller_q_qdot_tau(controller)
+    com = controller.model.center_of_mass()(q, controller.parameters.cx)
+    com_velocity = controller.model.center_of_mass_velocity()(q, qdot, controller.parameters.cx)
     vertical_velocity = _symbolic_positive_part(com_velocity[2])
     return -(com[2] + vertical_velocity**2 / (2.0 * gravity))
 
@@ -258,11 +360,12 @@ def _contact_force_penalty(
     """Return the selected contact force used in custom constraints."""
 
     if contact_model == CONTACT_MODEL_RIGID_UNILATERAL:
+        q, qdot, tau = _controller_q_qdot_tau(controller)
         _, contact_force, _ = _coupled_platform_dynamics_symbolic(
             controller.model,
-            controller.q,
-            controller.qdot,
-            controller.tau,
+            q,
+            qdot,
+            tau[controller.model.nb_root :],
             controller.parameters.cx,
             contact_index=_contact_index_from_name(controller.model, contact_name),
             platform_force_newtons=_symbolic_platform_force(
@@ -367,13 +470,15 @@ def _configure_explicit_platform_dynamics(
     _ = numerical_data_timeseries
     _ = contact_type
 
-    name_dof = list(nlp.model.name_dof)
+    name_dof = list(_model_dof_names(nlp.model))
     name_q_roots = name_dof[: nlp.model.nb_root]
     name_q_joints = name_dof[nlp.model.nb_root :]
 
-    ConfigureProblem.configure_new_variable("q_roots", name_q_roots, ocp, nlp, as_states=True, as_controls=False)
+    if name_q_roots:
+        ConfigureProblem.configure_new_variable("q_roots", name_q_roots, ocp, nlp, as_states=True, as_controls=False)
     ConfigureProblem.configure_new_variable("q_joints", name_q_joints, ocp, nlp, as_states=True, as_controls=False)
-    ConfigureProblem.configure_new_variable("qdot_roots", name_q_roots, ocp, nlp, as_states=True, as_controls=False)
+    if name_q_roots:
+        ConfigureProblem.configure_new_variable("qdot_roots", name_q_roots, ocp, nlp, as_states=True, as_controls=False)
     ConfigureProblem.configure_new_variable("qdot_joints", name_q_joints, ocp, nlp, as_states=True, as_controls=False)
     ConfigureProblem.configure_new_variable(
         "platform_position", ["z_platform"], ocp, nlp, as_states=True, as_controls=False
@@ -398,6 +503,118 @@ def _configure_explicit_platform_dynamics(
         contact_stiffness_n_per_m=contact_stiffness_n_per_m,
         contact_damping_n_s_per_m=contact_damping_n_s_per_m,
     )
+
+
+def _configure_explicit_platform_states(ConfigureVariables, ocp, nlp) -> None:
+    """Configure the split explicit-platform state variables for `bioptim>=3.4`."""
+
+    name_dof = list(_model_dof_names(nlp.model))
+    name_q_roots = name_dof[: nlp.model.nb_root]
+    name_q_joints = name_dof[nlp.model.nb_root :]
+    if name_q_roots:
+        ConfigureVariables.configure_new_variable("q_roots", name_q_roots, ocp, nlp, as_states=True, as_controls=False)
+    ConfigureVariables.configure_new_variable("q_joints", name_q_joints, ocp, nlp, as_states=True, as_controls=False)
+    if name_q_roots:
+        ConfigureVariables.configure_new_variable(
+            "qdot_roots",
+            name_q_roots,
+            ocp,
+            nlp,
+            as_states=True,
+            as_controls=False,
+        )
+    ConfigureVariables.configure_new_variable("qdot_joints", name_q_joints, ocp, nlp, as_states=True, as_controls=False)
+    ConfigureVariables.configure_new_variable(
+        "platform_position",
+        ["z_platform"],
+        ocp,
+        nlp,
+        as_states=True,
+        as_controls=False,
+    )
+    ConfigureVariables.configure_new_variable(
+        "platform_velocity",
+        ["zdot_platform"],
+        ocp,
+        nlp,
+        as_states=True,
+        as_controls=False,
+    )
+
+
+def _configure_explicit_platform_controls(ConfigureVariables, ocp, nlp) -> None:
+    """Configure the explicit-platform controls for `bioptim>=3.4`."""
+
+    name_dof = list(_model_dof_names(nlp.model))
+    name_q_joints = name_dof[nlp.model.nb_root :]
+    ConfigureVariables.configure_new_variable(
+        "tau_joints",
+        name_q_joints,
+        ocp,
+        nlp,
+        as_states=False,
+        as_controls=True,
+    )
+
+
+def _make_explicit_platform_model_class(BiorbdModel, StateDynamics, ConfigureVariables):
+    """Return one `bioptim>=3.4` custom model exposing the explicit platform dynamics."""
+
+    class ExplicitPlatformBiorbdModel(BiorbdModel, StateDynamics):
+        """Custom `BiorbdModel` carrying the explicit moving-platform dynamics."""
+
+        @property
+        def state_configuration_functions(self):
+            return [lambda ocp, nlp: _configure_explicit_platform_states(ConfigureVariables, ocp, nlp)]
+
+        @property
+        def control_configuration_functions(self):
+            return [lambda ocp, nlp: _configure_explicit_platform_controls(ConfigureVariables, ocp, nlp)]
+
+        @property
+        def algebraic_configuration_functions(self):
+            return []
+
+        @property
+        def extra_configuration_functions(self):
+            return []
+
+        @staticmethod
+        def dynamics(
+            time,
+            states,
+            controls,
+            parameters,
+            algebraic_states,
+            numerical_timeseries,
+            nlp,
+            **extra_parameters,
+        ):
+            return _explicit_platform_dynamics(
+                time,
+                states,
+                controls,
+                parameters,
+                algebraic_states,
+                numerical_timeseries,
+                nlp,
+                **extra_parameters,
+            )
+
+    return ExplicitPlatformBiorbdModel
+
+
+def _instantiate_ocp(OptimalControlProgram, api_kind: str, bio_model, dynamics, n_shooting: int, phase_time: float, **kwargs):
+    """Instantiate the OCP with the constructor layout matching the installed `bioptim`."""
+
+    if api_kind == "legacy":
+        return OptimalControlProgram(bio_model, dynamics, n_shooting, phase_time, **kwargs)
+    if api_kind == "modern":
+        return OptimalControlProgram(bio_model, n_shooting, phase_time, dynamics=dynamics, **kwargs)
+
+    signature = inspect.signature(OptimalControlProgram.__init__)
+    parameter_order = tuple(signature.parameters)
+    raise RuntimeError(f"Unsupported OptimalControlProgram signature: {parameter_order}")
 
 
 def _explicit_platform_dynamics(
@@ -428,7 +645,10 @@ def _explicit_platform_dynamics(
     _ = numerical_timeseries
 
     q, qdot, tau_joints, platform_position, platform_velocity = _split_q_vectors(nlp, states, controls)
-    dq = DynamicsFunctions.compute_qdot(nlp, q, qdot)
+    if nlp.model.nb_root:
+        dq = DynamicsFunctions.compute_qdot(nlp, q, qdot)
+    else:
+        dq = nlp.model.reshape_qdot()(q, qdot, parameters)
     platform_force_newtons = _symbolic_platform_force(
         time,
         peak_force_newtons=peak_force_newtons,
@@ -527,7 +747,6 @@ class VerticalJumpBioptimOcpBuilder:
         ConstraintFcn = bioptim_api["ConstraintFcn"]
         ConstraintList = bioptim_api["ConstraintList"]
         ControlType = bioptim_api["ControlType"]
-        Dynamics = bioptim_api["Dynamics"]
         InitialGuessList = bioptim_api["InitialGuessList"]
         InterpolationType = bioptim_api["InterpolationType"]
         Node = bioptim_api["Node"]
@@ -536,10 +755,19 @@ class VerticalJumpBioptimOcpBuilder:
         OdeSolver = bioptim_api["OdeSolver"]
         OptimalControlProgram = bioptim_api["OptimalControlProgram"]
         PhaseDynamics = bioptim_api["PhaseDynamics"]
+        api_kind = bioptim_api["api_kind"]
 
         blueprint = self.blueprint(peak_force_newtons)
         model_filepath = Path(model_path) if model_path is not None else self.export_model(Path.cwd() / "generated")
-        bio_model = BiorbdModel(str(model_filepath))
+        if api_kind == "legacy":
+            bio_model = BiorbdModel(str(model_filepath))
+        else:
+            ExplicitPlatformBiorbdModel = _make_explicit_platform_model_class(
+                BiorbdModel,
+                bioptim_api["StateDynamics"],
+                bioptim_api["ConfigureVariables"],
+            )
+            bio_model = ExplicitPlatformBiorbdModel(str(model_filepath))
 
         objective_functions = ObjectiveList()
         objective_functions.add(
@@ -579,9 +807,7 @@ class VerticalJumpBioptimOcpBuilder:
             maximum=self.settings.final_time_upper_bound_s,
         )
 
-        dynamics = Dynamics(
-            _configure_explicit_platform_dynamics,
-            dynamic_function=_explicit_platform_dynamics,
+        dynamics_kwargs = dict(
             phase_dynamics=PhaseDynamics.SHARED_DURING_THE_PHASE,
             expand_dynamics=False,
             ode_solver=OdeSolver.RK4(n_integration_steps=self.settings.rk4_substeps),
@@ -595,6 +821,16 @@ class VerticalJumpBioptimOcpBuilder:
             contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
             contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
         )
+        if api_kind == "legacy":
+            Dynamics = bioptim_api["Dynamics"]
+            dynamics = Dynamics(
+                _configure_explicit_platform_dynamics,
+                dynamic_function=_explicit_platform_dynamics,
+                **dynamics_kwargs,
+            )
+        else:
+            DynamicsOptions = bioptim_api["DynamicsOptions"]
+            dynamics = DynamicsOptions(**dynamics_kwargs)
 
         q_bounds = bio_model.bounds_from_ranges("q")
         qdot_bounds = bio_model.bounds_from_ranges("qdot")
@@ -637,24 +873,26 @@ class VerticalJumpBioptimOcpBuilder:
         platform_position_bounds = _constant_bounds_with_fixed_start([-0.2], [2.5], [0.0])
         platform_velocity_bounds = _constant_bounds_with_fixed_start([-10.0], [10.0], [0.0])
 
-        x_bounds.add(
-            "q_roots",
-            min_bound=q_roots_bounds[0],
-            max_bound=q_roots_bounds[1],
-            interpolation=InterpolationType.CONSTANT_WITH_FIRST_AND_LAST_DIFFERENT,
-        )
+        if bio_model.nb_root:
+            x_bounds.add(
+                "q_roots",
+                min_bound=q_roots_bounds[0],
+                max_bound=q_roots_bounds[1],
+                interpolation=InterpolationType.CONSTANT_WITH_FIRST_AND_LAST_DIFFERENT,
+            )
         x_bounds.add(
             "q_joints",
             min_bound=q_joints_bounds[0],
             max_bound=q_joints_bounds[1],
             interpolation=InterpolationType.CONSTANT_WITH_FIRST_AND_LAST_DIFFERENT,
         )
-        x_bounds.add(
-            "qdot_roots",
-            min_bound=qdot_roots_bounds[0],
-            max_bound=qdot_roots_bounds[1],
-            interpolation=InterpolationType.CONSTANT_WITH_FIRST_AND_LAST_DIFFERENT,
-        )
+        if bio_model.nb_root:
+            x_bounds.add(
+                "qdot_roots",
+                min_bound=qdot_roots_bounds[0],
+                max_bound=qdot_roots_bounds[1],
+                interpolation=InterpolationType.CONSTANT_WITH_FIRST_AND_LAST_DIFFERENT,
+            )
         x_bounds.add(
             "qdot_joints",
             min_bound=qdot_joints_bounds[0],
@@ -675,9 +913,11 @@ class VerticalJumpBioptimOcpBuilder:
         )
 
         x_init = InitialGuessList()
-        x_init["q_roots"] = initial_q[: bio_model.nb_root]
+        if bio_model.nb_root:
+            x_init["q_roots"] = initial_q[: bio_model.nb_root]
         x_init["q_joints"] = initial_q[bio_model.nb_root :]
-        x_init["qdot_roots"] = initial_qdot[: bio_model.nb_root]
+        if bio_model.nb_root:
+            x_init["qdot_roots"] = initial_qdot[: bio_model.nb_root]
         x_init["qdot_joints"] = initial_qdot[bio_model.nb_root :]
         x_init["platform_position"] = [0.0]
         x_init["platform_velocity"] = [0.0]
@@ -689,7 +929,9 @@ class VerticalJumpBioptimOcpBuilder:
         u_init = InitialGuessList()
         u_init["tau_joints"] = [0.0] * n_joint_tau
 
-        return OptimalControlProgram(
+        return _instantiate_ocp(
+            OptimalControlProgram,
+            api_kind,
             bio_model,
             dynamics,
             self.settings.n_shooting,

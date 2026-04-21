@@ -8,7 +8,11 @@ from typing import Any, Callable
 
 import numpy as np
 
-from synchro_jump.optimization.bioptim_ocp import VerticalJumpBioptimOcpBuilder
+from synchro_jump.optimization.bioptim_ocp import (
+    VerticalJumpBioptimOcpBuilder,
+    _model_contact_axis,
+    _model_contact_names,
+)
 from synchro_jump.optimization.contact import PlatformInteractionModel
 from synchro_jump.optimization.explicit_platform import (
     platform_actuation_force,
@@ -60,6 +64,10 @@ def _merge_split_states(state_trajectories: dict[str, np.ndarray], prefix: str) 
     split_joints = state_trajectories.get(f"{prefix}_joints")
     if split_roots is not None and split_joints is not None:
         return np.vstack((split_roots, split_joints))
+    if split_joints is not None:
+        return split_joints
+    if split_roots is not None:
+        return split_roots
 
     merged = state_trajectories.get(prefix)
     if merged is None:
@@ -195,8 +203,8 @@ def _evaluate_rigid_contact_force_trajectory(
     qdot_trajectory = _merge_split_states(state_trajectories, "qdot")
     tau_joints_trajectory = np.asarray(control_trajectories["tau_joints"], dtype=float)
 
-    contact_index = _contact_index_from_name(model.contact_names, contact_name)
-    contact_axis = model.rigid_contact_index(contact_index)[0]
+    contact_index = _contact_index_from_name(_model_contact_names(model), contact_name)
+    contact_axis = _model_contact_axis(model, contact_index)
     contact_acceleration = model.rigid_contact_acceleration(contact_index, contact_axis)
     mass_matrix_fun = model.mass_matrix()
     nonlinear_effects_fun = model.non_linear_effects()
@@ -210,13 +218,16 @@ def _evaluate_rigid_contact_force_trajectory(
         qdot_column = DM(qdot_trajectory[:, node_index].reshape((-1, 1)))
         zero_qddot = DM.zeros(model.nb_q, 1)
 
-        contact_bias = float(np.asarray(contact_acceleration(q_column, qdot_column, zero_qddot, DM()), dtype=float))
+        contact_bias = float(
+            np.asarray(contact_acceleration(q_column, qdot_column, zero_qddot, DM()), dtype=float).reshape((-1,))[0]
+        )
         contact_jacobian = np.zeros((1, model.nb_q), dtype=float)
         for dof_index in range(model.nb_q):
             basis_qddot = DM.zeros(model.nb_q, 1)
             basis_qddot[dof_index] = 1.0
             basis_acceleration = float(
                 np.asarray(contact_acceleration(q_column, qdot_column, basis_qddot, DM()), dtype=float)
+                .reshape((-1,))[0]
             )
             contact_jacobian[0, dof_index] = basis_acceleration - contact_bias
 
