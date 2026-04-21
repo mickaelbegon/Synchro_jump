@@ -56,10 +56,13 @@ class SynchroJumpApp:
         self.export_status = ""
         self.build_status = ""
         self.solution_status = ""
+        self.ocp_is_built = False
         self.runtime_solution: OcpSolveSummary | None = None
         self.animation_playing = False
         self.animation_job: str | None = None
 
+        self.build_button = None
+        self.solve_button = None
         self.figure_widget = None
         self.force_axis = None
         self.pose_axis = None
@@ -129,8 +132,10 @@ class SynchroJumpApp:
         )
         self.solve_iterations_scale.pack(fill=tk.X, pady=(0, 12))
 
-        ttk.Button(parent, text="Construire l'OCP", command=self.build_ocp).pack(fill=tk.X, pady=(8, 8))
-        ttk.Button(parent, text="Resoudre l'OCP", command=self.solve_ocp).pack(fill=tk.X, pady=(0, 8))
+        self.build_button = ttk.Button(parent, text="Construire l'OCP", command=self.build_ocp)
+        self.build_button.pack(fill=tk.X, pady=(8, 8))
+        self.solve_button = ttk.Button(parent, text="Resoudre l'OCP", command=self.solve_ocp)
+        self.solve_button.pack(fill=tk.X, pady=(0, 8))
         ttk.Button(parent, text="Exporter le modele", command=self.export_model).pack(fill=tk.X, pady=(0, 8))
 
         ttk.Label(parent, text="Animation trajectoire").pack(anchor=tk.W, pady=(12, 0))
@@ -151,6 +156,7 @@ class SynchroJumpApp:
         ttk.Label(parent, textvariable=self.status_var, wraplength=300, justify=tk.LEFT).pack(
             fill=tk.X, pady=(12, 0)
         )
+        self._update_ocp_button_states()
 
     def _build_figures(self, parent: ttk.Frame) -> None:
         """Create the Matplotlib figure area when available."""
@@ -201,10 +207,25 @@ class SynchroJumpApp:
         self._stop_animation()
         self.build_status = ""
         self.solution_status = ""
+        self._set_ocp_built_state(False)
         self.runtime_solution = None
         self.animation_frame_var.set(0)
         if hasattr(self, "animation_scale"):
             self.animation_scale.configure(to=0)
+
+    def _set_ocp_built_state(self, is_built: bool) -> None:
+        """Store the OCP build state and refresh the action buttons."""
+
+        self.ocp_is_built = is_built
+        self._update_ocp_button_states()
+
+    def _update_ocp_button_states(self) -> None:
+        """Enable or disable build/solve buttons from the current OCP state."""
+
+        if self.build_button is not None:
+            self.build_button.configure(state=tk.DISABLED if self.ocp_is_built else tk.NORMAL)
+        if self.solve_button is not None:
+            self.solve_button.configure(state=tk.NORMAL if self.ocp_is_built else tk.DISABLED)
 
     def current_settings(self):
         """Return the OCP settings associated with the current sliders."""
@@ -544,13 +565,20 @@ class SynchroJumpApp:
                 f"- etats: {', '.join(summary.state_names)}\n"
                 f"- controles: {', '.join(summary.control_names)}"
             )
+            self._set_ocp_built_state(True)
         else:
             self.build_status = f"Construction runtime:\n- succes: non\n- message: {summary.message}"
+            self._set_ocp_built_state(False)
         self.solution_status = ""
         self.refresh()
 
     def solve_ocp(self) -> None:
         """Solve one quick runtime OCP and expose the trajectories in the GUI."""
+
+        if not self.ocp_is_built:
+            self.solution_status = "Resolution runtime:\n- succes: non\n- message: construis d'abord l'OCP"
+            self.refresh()
+            return
 
         self._stop_animation()
         self.solution_status = (
