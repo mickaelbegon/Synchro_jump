@@ -606,7 +606,8 @@ class SynchroJumpApp:
         self._stop_animation()
         self.solution_status = (
             "Resolution runtime:\n"
-            f"- en cours...\n- iterations max: {self.current_solver_iterations()}"
+            f"- en cours...\n- iterations max: {self.current_solver_iterations()}\n"
+            "- journal IPOPT detaille: terminal"
         )
         self.refresh()
         self._show_busy_indicator("Resolution de l'OCP en cours")

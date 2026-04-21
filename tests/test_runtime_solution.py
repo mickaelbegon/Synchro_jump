@@ -7,7 +7,11 @@ from pathlib import Path
 import numpy as np
 
 from synchro_jump.optimization.problem import CONTACT_MODEL_COMPLIANT_UNILATERAL, VerticalJumpOcpSettings
-from synchro_jump.optimization.runtime_solution import solve_ocp_runtime_summary, summarize_solved_ocp
+from synchro_jump.optimization.runtime_solution import (
+    _configure_ipopt_solver,
+    solve_ocp_runtime_summary,
+    summarize_solved_ocp,
+)
 
 
 class _FakeSolution:
@@ -155,3 +159,32 @@ def test_solve_ocp_runtime_summary_reports_missing_optional_dependency(tmp_path:
     assert not summary.success
     assert "Dependance optionnelle manquante" in summary.message
     assert summary.requested_iterations == 3
+
+
+def test_configure_ipopt_solver_enables_iteration_and_timing_logs() -> None:
+    """The IPOPT helper should request verbose iteration and timing output."""
+
+    class _FakeSolver:
+        def __init__(self) -> None:
+            self.maximum_iterations = None
+            self.print_level = None
+            self.options = {}
+
+        def set_maximum_iterations(self, value: int) -> None:
+            self.maximum_iterations = value
+
+        def set_print_level(self, value: int) -> None:
+            self.print_level = value
+
+        def set_option_unsafe(self, value, name: str) -> None:
+            self.options[name] = value
+
+    solver = _FakeSolver()
+
+    _configure_ipopt_solver(solver, maximum_iterations=1000, print_level=5)
+
+    assert solver.maximum_iterations == 1000
+    assert solver.print_level == 5
+    assert solver.options["print_timing_statistics"] == "yes"
+    assert solver.options["print_frequency_iter"] == 1
+    assert solver.options["print_frequency_time"] == 0

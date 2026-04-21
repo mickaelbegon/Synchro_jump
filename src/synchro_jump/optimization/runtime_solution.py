@@ -57,6 +57,16 @@ class OcpSolveSummary:
     platform_acceleration_trajectory_m_s2: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
 
 
+def _configure_ipopt_solver(solver: Any, *, maximum_iterations: int, print_level: int) -> None:
+    """Configure IPOPT to print each iteration and detailed timing statistics."""
+
+    solver.set_maximum_iterations(maximum_iterations)
+    solver.set_print_level(print_level)
+    solver.set_option_unsafe("yes", "print_timing_statistics")
+    solver.set_option_unsafe(1, "print_frequency_iter")
+    solver.set_option_unsafe(0, "print_frequency_time")
+
+
 def _merge_split_states(state_trajectories: dict[str, np.ndarray], prefix: str) -> np.ndarray:
     """Return one full generalized vector assembled from split root and joint arrays."""
 
@@ -411,7 +421,7 @@ def solve_ocp_runtime_summary(
     *,
     model_output_dir: str | Path = "generated",
     maximum_iterations: int = 1000,
-    print_level: int = 0,
+    print_level: int = 5,
 ) -> OcpSolveSummary:
     """Build and solve the runtime OCP, then summarize the result."""
 
@@ -443,8 +453,11 @@ def solve_ocp_runtime_summary(
     try:
         ocp = builder.build_ocp(peak_force_newtons=peak_force_newtons, model_path=model_path)
         solver = Solver.IPOPT()
-        solver.set_maximum_iterations(maximum_iterations)
-        solver.set_print_level(print_level)
+        _configure_ipopt_solver(
+            solver,
+            maximum_iterations=maximum_iterations,
+            print_level=print_level,
+        )
         solution = ocp.solve(solver)
         return summarize_solved_ocp(
             solution,
