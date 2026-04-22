@@ -22,6 +22,7 @@ from synchro_jump.optimization import (
 from synchro_jump.optimization.problem import (
     CONTACT_MODEL_COMPLIANT_UNILATERAL,
     CONTACT_MODEL_RIGID_UNILATERAL,
+    snap_to_discrete_value,
 )
 
 
@@ -50,6 +51,7 @@ class SynchroJumpApp:
         self.contact_model_var = tk.StringVar(
             value=self.contact_model_labels[self.base_settings.contact_model]
         )
+        self.use_cache_var = tk.BooleanVar(value=True)
         self.solve_iterations_var = tk.IntVar(value=self.default_solve_iterations)
         self.animation_frame_var = tk.IntVar(value=0)
         self.status_var = tk.StringVar()
@@ -91,7 +93,7 @@ class SynchroJumpApp:
             parent,
             from_=self.base_settings.force_slider_values_newtons[0],
             to=self.base_settings.force_slider_values_newtons[-1],
-            resolution=50,
+            resolution=0.1,
             orient=tk.HORIZONTAL,
             variable=self.force_var,
             command=self._on_parameter_change,
@@ -104,7 +106,7 @@ class SynchroJumpApp:
             parent,
             from_=self.base_settings.mass_slider_values_kg[0],
             to=self.base_settings.mass_slider_values_kg[-1],
-            resolution=5,
+            resolution=0.01,
             orient=tk.HORIZONTAL,
             variable=self.mass_var,
             command=self._on_parameter_change,
@@ -133,6 +135,9 @@ class SynchroJumpApp:
             length=260,
         )
         self.solve_iterations_scale.pack(fill=tk.X, pady=(0, 12))
+        ttk.Checkbutton(parent, text="Utiliser le cache optimal", variable=self.use_cache_var).pack(
+            anchor=tk.W, pady=(0, 12)
+        )
 
         self.build_button = ttk.Button(parent, text="Construire l'OCP", command=self.build_ocp)
         self.build_button.pack(fill=tk.X, pady=(8, 8))
@@ -191,6 +196,8 @@ class SynchroJumpApp:
     def _on_parameter_change(self, _value: str) -> None:
         """Invalidate runtime results when one slider changes."""
 
+        self.force_var.set(self.current_force_newtons())
+        self.mass_var.set(self.current_mass_kg())
         self._invalidate_runtime_results()
         self.refresh()
 
@@ -250,14 +257,19 @@ class SynchroJumpApp:
         """Return the OCP settings associated with the current sliders."""
 
         return self.base_settings.__class__(
-            athlete_mass_kg=int(self.mass_var.get()),
+            athlete_mass_kg=self.current_mass_kg(),
             contact_model=self.current_contact_model_key(),
         )
 
     def current_force_newtons(self) -> float:
         """Return the current platform-force slider value."""
 
-        return float(self.force_var.get())
+        return snap_to_discrete_value(float(self.force_var.get()), self.base_settings.force_slider_values_newtons)
+
+    def current_mass_kg(self) -> float:
+        """Return the current athlete-mass slider value."""
+
+        return snap_to_discrete_value(float(self.mass_var.get()), self.base_settings.mass_slider_values_kg)
 
     def current_solver_iterations(self) -> int:
         """Return the requested number of IPOPT iterations."""
@@ -279,7 +291,7 @@ class SynchroJumpApp:
     def current_morphology(self) -> AthleteMorphology:
         """Return the morphology associated with the current mass slider."""
 
-        return AthleteMorphology(height_m=self.base_settings.athlete_height_m, mass_kg=float(self.mass_var.get()))
+        return AthleteMorphology(height_m=self.base_settings.athlete_height_m, mass_kg=self.current_mass_kg())
 
     def current_profile(self) -> PlatformForceProfile:
         """Return the current force profile selected by the slider."""
@@ -291,6 +303,22 @@ class SynchroJumpApp:
 
         builder = VerticalJumpBioptimOcpBuilder(settings=self.current_settings())
         return builder.blueprint(self.current_force_newtons()).contact_force_target()
+
+    def _runtime_q_trajectory(self) -> np.ndarray | None:
+        """Return the full runtime generalized-coordinate trajectory when available."""
+
+        if self.runtime_solution is None:
+            return None
+
+        q_roots = self.runtime_solution.state_trajectories.get("q_roots")
+        q_joints = self.runtime_solution.state_trajectories.get("q_joints")
+        if q_roots is not None and q_joints is not None:
+            return np.vstack((q_roots, q_joints))
+        if q_joints is not None:
+            return q_joints
+        if q_roots is not None:
+            return q_roots
+        return self.runtime_solution.state_trajectories.get("q")
 
     def refresh(self) -> None:
         """Refresh the figures and the textual summary."""
@@ -426,16 +454,13 @@ class SynchroJumpApp:
             alpha=0.85,
         )
 
-        if self.runtime_solution is not None:
-            state_trajectories = self.runtime_solution.state_trajectories
-            q_roots = state_trajectories.get("q_roots")
-            q_joints = state_trajectories.get("q_joints")
-            if q_roots is not None and q_joints is not None:
-                sample_count = min(4, q_roots.shape[1])
-                sample_indices = np.linspace(0, q_roots.shape[1] - 1, sample_count, dtype=int)
+        q_trajectory = self._runtime_q_trajectory()
+        if q_trajectory is not None and q_trajectory.shape[0] >= 5:
+                sample_count = min(4, q_trajectory.shape[1])
+                sample_indices = np.linspace(0, q_trajectory.shape[1] - 1, sample_count, dtype=int)
                 sample_colors = ("#a1c181", "#619b8a", "#216869", "#c44536")
                 for sample_rank, sample_index in enumerate(sample_indices):
-                    sample_q = tuple([*q_roots[:, sample_index], *q_joints[:, sample_index]])
+                    sample_q = tuple(q_trajectory[:, sample_index].tolist())
                     sample_points = self._pose_points_from_q(morphology, sample_q)
                     self._draw_stick_figure(
                         self.pose_axis,
@@ -450,7 +475,7 @@ class SynchroJumpApp:
                         alpha=0.45 + 0.15 * sample_rank,
                     )
                 animation_index = self.current_animation_frame()
-                animated_q = tuple([*q_roots[:, animation_index], *q_joints[:, animation_index]])
+                animated_q = tuple(q_trajectory[:, animation_index].tolist())
                 animated_points = self._pose_points_from_q(morphology, animated_q)
                 self._draw_stick_figure(
                     self.pose_axis,
@@ -615,6 +640,7 @@ class SynchroJumpApp:
             summary = solve_ocp_runtime_summary(
                 settings=self.current_settings(),
                 peak_force_newtons=self.current_force_newtons(),
+                use_cache=bool(self.use_cache_var.get()),
                 maximum_iterations=self.current_solver_iterations(),
             )
             if summary.success:
@@ -624,6 +650,7 @@ class SynchroJumpApp:
                 self.solution_status = (
                     "Resolution runtime:\n"
                     f"- succes: oui\n"
+                    f"- cache: {'oui' if summary.from_cache else 'non'}\n"
                     f"- modele contact: {self.contact_model_var.get()}\n"
                     f"- iterations demandees: {summary.requested_iterations}\n"
                     f"- statut solveur: {summary.solver_status}\n"

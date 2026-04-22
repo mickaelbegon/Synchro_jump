@@ -9,10 +9,12 @@ from pathlib import Path
 from synchro_jump.modeling import AthleteMorphology, PlanarJumperModelDefinition
 from synchro_jump.optimization.contact import PlatformInteractionModel
 from synchro_jump.optimization.force_profile import PlatformForceProfile
+from synchro_jump.optimization.initial_guess import build_linear_inverse_dynamics_initial_guess
 from synchro_jump.optimization.problem import (
     CONTACT_MODEL_COMPLIANT_UNILATERAL,
     CONTACT_MODEL_RIGID_UNILATERAL,
     VerticalJumpOcpSettings,
+    snap_to_discrete_value,
 )
 
 
@@ -711,8 +713,7 @@ class VerticalJumpBioptimOcpBuilder:
     def blueprint(self, peak_force_newtons: float) -> VerticalJumpOcpBlueprint:
         """Create a serializable OCP blueprint for one force-slider choice."""
 
-        if peak_force_newtons not in self.settings.force_slider_values_newtons:
-            raise ValueError("peak_force_newtons must match one slider value")
+        peak_force_newtons = snap_to_discrete_value(peak_force_newtons, self.settings.force_slider_values_newtons)
         return VerticalJumpOcpBlueprint(
             settings=self.settings,
             peak_force_newtons=peak_force_newtons,
@@ -848,6 +849,13 @@ class VerticalJumpBioptimOcpBuilder:
             ).initial_joint_configuration_rad
         )
         initial_qdot = [0.0] * bio_model.nb_qdot
+        initial_guess = build_linear_inverse_dynamics_initial_guess(
+            bio_model,
+            initial_q,
+            duration_s=final_time_guess,
+            n_shooting=self.settings.n_shooting,
+            final_platform_height_m=1.3,
+        )
 
         x_bounds = BoundsList()
         q_roots_bounds = _constant_bounds_with_fixed_start(
@@ -914,20 +922,48 @@ class VerticalJumpBioptimOcpBuilder:
 
         x_init = InitialGuessList()
         if bio_model.nb_root:
-            x_init["q_roots"] = initial_q[: bio_model.nb_root]
-        x_init["q_joints"] = initial_q[bio_model.nb_root :]
+            x_init.add(
+                "q_roots",
+                initial_guess.q[: bio_model.nb_root, :],
+                interpolation=InterpolationType.EACH_FRAME,
+            )
+        x_init.add(
+            "q_joints",
+            initial_guess.q[bio_model.nb_root :, :],
+            interpolation=InterpolationType.EACH_FRAME,
+        )
         if bio_model.nb_root:
-            x_init["qdot_roots"] = initial_qdot[: bio_model.nb_root]
-        x_init["qdot_joints"] = initial_qdot[bio_model.nb_root :]
-        x_init["platform_position"] = [0.0]
-        x_init["platform_velocity"] = [0.0]
+            x_init.add(
+                "qdot_roots",
+                initial_guess.qdot[: bio_model.nb_root, :],
+                interpolation=InterpolationType.EACH_FRAME,
+            )
+        x_init.add(
+            "qdot_joints",
+            initial_guess.qdot[bio_model.nb_root :, :],
+            interpolation=InterpolationType.EACH_FRAME,
+        )
+        x_init.add(
+            "platform_position",
+            initial_guess.platform_position,
+            interpolation=InterpolationType.EACH_FRAME,
+        )
+        x_init.add(
+            "platform_velocity",
+            initial_guess.platform_velocity,
+            interpolation=InterpolationType.EACH_FRAME,
+        )
 
         n_joint_tau = bio_model.nb_q - bio_model.nb_root
         u_bounds = BoundsList()
         u_bounds["tau_joints"] = [self.settings.tau_min_nm] * n_joint_tau, [self.settings.tau_max_nm] * n_joint_tau
 
         u_init = InitialGuessList()
-        u_init["tau_joints"] = [0.0] * n_joint_tau
+        u_init.add(
+            "tau_joints",
+            initial_guess.tau[bio_model.nb_root :, :],
+            interpolation=InterpolationType.EACH_FRAME,
+        )
 
         return _instantiate_ocp(
             OptimalControlProgram,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -23,6 +23,10 @@ from synchro_jump.optimization.problem import (
     CONTACT_MODEL_COMPLIANT_UNILATERAL,
     CONTACT_MODEL_RIGID_UNILATERAL,
     VerticalJumpOcpSettings,
+)
+from synchro_jump.optimization.solution_cache import (
+    load_cached_solution_summary,
+    save_cached_solution_summary,
 )
 
 
@@ -55,6 +59,7 @@ class OcpSolveSummary:
     contact_force_trajectory_n: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
     platform_force_trajectory_n: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
     platform_acceleration_trajectory_m_s2: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
+    from_cache: bool = False
 
 
 def _configure_ipopt_solver(solver: Any, *, maximum_iterations: int, print_level: int) -> None:
@@ -420,12 +425,27 @@ def solve_ocp_runtime_summary(
     peak_force_newtons: float,
     *,
     model_output_dir: str | Path = "generated",
+    cache_dir: str | Path = "generated/optimal_solution_cache",
+    use_cache: bool = True,
     maximum_iterations: int = 1000,
     print_level: int = 5,
 ) -> OcpSolveSummary:
     """Build and solve the runtime OCP, then summarize the result."""
 
     builder = VerticalJumpBioptimOcpBuilder(settings=settings)
+    if use_cache:
+        cached_summary = load_cached_solution_summary(
+            cache_dir,
+            settings,
+            peak_force_newtons,
+            maximum_iterations,
+        )
+        if cached_summary is not None:
+            return replace(
+                cached_summary,
+                from_cache=True,
+                message=f"{cached_summary.message} (chargee depuis le cache)",
+            )
     try:
         model_path = builder.export_model(model_output_dir)
     except (ImportError, ModuleNotFoundError) as exc:
@@ -459,7 +479,7 @@ def solve_ocp_runtime_summary(
             print_level=print_level,
         )
         solution = ocp.solve(solver)
-        return summarize_solved_ocp(
+        summary = summarize_solved_ocp(
             solution,
             model_path=model_path,
             requested_iterations=maximum_iterations,
@@ -472,6 +492,14 @@ def solve_ocp_runtime_summary(
             contact_damping_n_s_per_m=settings.contact_damping_n_s_per_m,
             total_duration_s=settings.final_time_upper_bound_s,
         )
+        save_cached_solution_summary(
+            cache_dir,
+            settings,
+            peak_force_newtons,
+            maximum_iterations,
+            summary,
+        )
+        return summary
     except ModuleNotFoundError as exc:
         dependency_name = getattr(exc, "name", None) or str(exc)
         return OcpSolveSummary(

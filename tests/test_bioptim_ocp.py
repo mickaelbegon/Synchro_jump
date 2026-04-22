@@ -88,13 +88,13 @@ def test_blueprint_contact_target_ends_with_zero_or_positive_force() -> None:
     assert min(target) >= 0.0
 
 
-def test_builder_rejects_non_slider_force_values() -> None:
-    """The OCP builder stays synchronized with the GUI force slider."""
+def test_builder_snaps_force_to_the_discrete_slider_grid() -> None:
+    """The OCP builder should accept arbitrary force values and snap them to the grid."""
 
     builder = VerticalJumpBioptimOcpBuilder(VerticalJumpOcpSettings())
+    blueprint = builder.blueprint(peak_force_newtons=975.0)
 
-    with pytest.raises(ValueError, match="slider value"):
-        builder.blueprint(peak_force_newtons=975.0)
+    assert blueprint.peak_force_newtons in builder.settings.force_slider_values_newtons
 
 
 def test_import_bioptim_build_api_accepts_legacy_dynamics(monkeypatch) -> None:

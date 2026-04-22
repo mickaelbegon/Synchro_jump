@@ -113,3 +113,18 @@ def test_gui_busy_indicator_can_be_shown_and_hidden() -> None:
     app._hide_busy_indicator()
     assert app.busy_var.value == ""
     assert app.busy_label.mapped is False
+
+
+def test_runtime_q_trajectory_supports_joint_only_solutions() -> None:
+    """The GUI should animate runtime solutions even when only `q_joints` are present."""
+
+    app = object.__new__(SynchroJumpApp)
+    app.runtime_solution = type(
+        "_RuntimeSolution",
+        (),
+        {"state_trajectories": {"q_joints": __import__("numpy").array([[0.0, 1.0], [2.0, 3.0]])}},
+    )()
+
+    q_trajectory = app._runtime_q_trajectory()
+
+    assert q_trajectory.shape == (2, 2)

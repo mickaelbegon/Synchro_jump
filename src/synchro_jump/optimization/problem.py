@@ -11,19 +11,31 @@ CONTACT_MODEL_COMPLIANT_UNILATERAL = "compliant_unilateral"
 def discrete_force_slider_values() -> tuple[int, ...]:
     """Return the admissible platform-force slider values."""
 
-    return tuple(range(900, 1301, 50))
+    return tuple(900.0 + 400.0 * index / 19.0 for index in range(20))
 
 
 def discrete_mass_slider_values() -> tuple[int, ...]:
     """Return the admissible athlete-mass slider values."""
 
-    return (40, 45, 50, 55)
+    return tuple(40.0 + 15.0 * index / 19.0 for index in range(20))
 
 
 def discrete_contact_models() -> tuple[str, ...]:
     """Return the supported athlete-platform contact models."""
 
     return (CONTACT_MODEL_RIGID_UNILATERAL, CONTACT_MODEL_COMPLIANT_UNILATERAL)
+
+
+def snap_to_discrete_value(value: float, admissible_values: tuple[float, ...]) -> float:
+    """Return the closest admissible slider value."""
+
+    return min(admissible_values, key=lambda candidate: abs(candidate - value))
+
+
+def matches_discrete_value(value: float, admissible_values: tuple[float, ...], *, tolerance: float = 1e-9) -> bool:
+    """Return whether one value belongs to the requested discrete grid."""
+
+    return abs(snap_to_discrete_value(value, admissible_values) - value) <= tolerance
 
 
 @dataclass(frozen=True)
@@ -44,8 +56,8 @@ class VerticalJumpOcpSettings:
     rk4_substeps: int = 4
     n_threads: int = 6
     initial_joint_flexion_deg: float = 100.0
-    force_slider_values_newtons: tuple[int, ...] = field(default_factory=discrete_force_slider_values)
-    mass_slider_values_kg: tuple[int, ...] = field(default_factory=discrete_mass_slider_values)
+    force_slider_values_newtons: tuple[float, ...] = field(default_factory=discrete_force_slider_values)
+    mass_slider_values_kg: tuple[float, ...] = field(default_factory=discrete_mass_slider_values)
 
     def __post_init__(self) -> None:
         """Validate the OCP settings."""
@@ -54,8 +66,8 @@ class VerticalJumpOcpSettings:
             raise ValueError("platform_mass_kg must be strictly positive")
         if self.athlete_height_m <= 0.0:
             raise ValueError("athlete_height_m must be strictly positive")
-        if self.athlete_mass_kg not in self.mass_slider_values_kg:
-            raise ValueError("athlete_mass_kg must match one slider value")
+        if not (self.mass_slider_values_kg[0] <= self.athlete_mass_kg <= self.mass_slider_values_kg[-1]):
+            raise ValueError("athlete_mass_kg must stay within the slider range")
         if self.contact_model not in discrete_contact_models():
             raise ValueError("contact_model must match one supported contact mode")
         if self.contact_stiffness_n_per_m < 0.0:
