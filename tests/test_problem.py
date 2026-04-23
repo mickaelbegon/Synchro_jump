@@ -16,21 +16,25 @@ from synchro_jump.optimization.problem import (
 
 
 def test_force_slider_values_match_requested_grid() -> None:
-    """The platform-force slider exposes the requested 20-value grid."""
+    """The platform-force slider exposes one integer-valued grid."""
 
     values = discrete_force_slider_values()
-    assert len(values) == 20
-    assert values[0] == pytest.approx(900.0)
-    assert values[-1] == pytest.approx(1300.0)
+    assert len(values) == 21
+    assert values[0] == 900
+    assert values[-1] == 1300
+    assert all(isinstance(value, int) for value in values)
+    assert all(next_value - value == 20 for value, next_value in zip(values, values[1:]))
 
 
 def test_mass_slider_values_match_requested_grid() -> None:
-    """The athlete-mass slider exposes the requested 20-value grid."""
+    """The athlete-mass slider exposes one integer-valued grid."""
 
     values = discrete_mass_slider_values()
-    assert len(values) == 20
-    assert values[0] == pytest.approx(40.0)
-    assert values[-1] == pytest.approx(55.0)
+    assert len(values) == 18
+    assert values[0] == 40
+    assert values[-1] == 57
+    assert all(isinstance(value, int) for value in values)
+    assert all(next_value - value == 1 for value, next_value in zip(values, values[1:]))
 
 
 def test_contact_model_values_match_supported_modes() -> None:

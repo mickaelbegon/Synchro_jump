@@ -9,15 +9,15 @@ CONTACT_MODEL_COMPLIANT_UNILATERAL = "compliant_unilateral"
 
 
 def discrete_force_slider_values() -> tuple[int, ...]:
-    """Return the admissible platform-force slider values."""
+    """Return the admissible integer platform-force slider values."""
 
-    return tuple(900.0 + 400.0 * index / 19.0 for index in range(20))
+    return tuple(900 + 20 * index for index in range(21))
 
 
 def discrete_mass_slider_values() -> tuple[int, ...]:
-    """Return the admissible athlete-mass slider values."""
+    """Return the admissible integer athlete-mass slider values."""
 
-    return tuple(40.0 + 15.0 * index / 19.0 for index in range(20))
+    return tuple(40 + index for index in range(18))
 
 
 def discrete_contact_models() -> tuple[str, ...]:
