@@ -81,3 +81,10 @@ def test_settings_reject_non_boolean_use_sx() -> None:
 
     with pytest.raises(ValueError, match="use_sx"):
         VerticalJumpOcpSettings(athlete_mass_kg=50.0, use_sx="yes")
+
+
+def test_settings_reject_non_boolean_expand_dynamics() -> None:
+    """The OCP settings should keep one explicit boolean expansion choice."""
+
+    with pytest.raises(ValueError, match="expand_dynamics"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, expand_dynamics="yes")

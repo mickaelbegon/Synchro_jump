@@ -56,6 +56,7 @@ class VerticalJumpOcpSettings:
     rk4_substeps: int = 4
     n_threads: int = 6
     use_sx: bool = True
+    expand_dynamics: bool = True
     initial_joint_flexion_deg: float = 100.0
     force_slider_values_newtons: tuple[float, ...] = field(default_factory=discrete_force_slider_values)
     mass_slider_values_kg: tuple[float, ...] = field(default_factory=discrete_mass_slider_values)
@@ -89,5 +90,7 @@ class VerticalJumpOcpSettings:
             raise ValueError("n_threads must be strictly positive")
         if not isinstance(self.use_sx, bool):
             raise ValueError("use_sx must be a boolean")
+        if not isinstance(self.expand_dynamics, bool):
+            raise ValueError("expand_dynamics must be a boolean")
         if not self.force_slider_values_newtons:
             raise ValueError("force_slider_values_newtons cannot be empty")

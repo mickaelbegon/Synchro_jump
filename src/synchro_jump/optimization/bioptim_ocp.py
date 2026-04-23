@@ -810,7 +810,7 @@ class VerticalJumpBioptimOcpBuilder:
 
         dynamics_kwargs = dict(
             phase_dynamics=PhaseDynamics.SHARED_DURING_THE_PHASE,
-            expand_dynamics=False,
+            expand_dynamics=self.settings.expand_dynamics,
             ode_solver=OdeSolver.RK4(n_integration_steps=self.settings.rk4_substeps),
             peak_force_newtons=peak_force_newtons,
             total_duration_s=self.settings.final_time_upper_bound_s,
