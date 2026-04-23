@@ -74,3 +74,10 @@ def test_settings_reject_unknown_contact_model() -> None:
 
     with pytest.raises(ValueError, match="contact_model"):
         VerticalJumpOcpSettings(athlete_mass_kg=50.0, contact_model="unsupported")
+
+
+def test_settings_reject_non_boolean_use_sx() -> None:
+    """The OCP settings should keep one explicit boolean symbolic-type choice."""
+
+    with pytest.raises(ValueError, match="use_sx"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, use_sx="yes")

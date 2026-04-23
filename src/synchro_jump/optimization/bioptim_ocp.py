@@ -980,4 +980,5 @@ class VerticalJumpBioptimOcpBuilder:
             constraints=constraints,
             control_type=ControlType.CONSTANT,
             n_threads=self.settings.n_threads,
+            use_sx=self.settings.use_sx,
         )

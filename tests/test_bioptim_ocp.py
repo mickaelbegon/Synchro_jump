@@ -132,6 +132,7 @@ def test_build_ocp_smoke_when_bioptim_is_available(tmp_path: Path) -> None:
 
     pytest.importorskip("bioptim")
     pytest.importorskip("biorbd_casadi")
+    from casadi import SX
 
     builder = VerticalJumpBioptimOcpBuilder(VerticalJumpOcpSettings(athlete_mass_kg=50.0))
     model_path = builder.export_model(tmp_path)
@@ -139,4 +140,5 @@ def test_build_ocp_smoke_when_bioptim_is_available(tmp_path: Path) -> None:
     ocp = builder.build_ocp(peak_force_newtons=1100.0, model_path=model_path)
 
     assert ocp.n_phases == 1
+    assert ocp.cx is SX
     assert "tau_joints" in ocp.nlp[0].controls.keys()

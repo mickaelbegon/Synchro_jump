@@ -253,6 +253,17 @@ class SynchroJumpApp:
         if self.busy_label is not None and self.busy_label.winfo_ismapped():
             self.busy_label.pack_forget()
 
+    def _log_runtime_request(self, action: str) -> None:
+        """Print one compact runtime banner in the terminal."""
+
+        print(
+            "[SynchroJump]"
+            f" {action}"
+            f" | force={self.current_force_newtons():.0f} N"
+            f" | masse={self.current_mass_kg():.0f} kg"
+            f" | contact={self.current_contact_model_key()}"
+        )
+
     def current_settings(self):
         """Return the OCP settings associated with the current sliders."""
 
@@ -597,12 +608,14 @@ class SynchroJumpApp:
         """Attempt to instantiate the `bioptim` OCP for the current sliders."""
 
         self.runtime_solution = None
+        self._log_runtime_request("Construction OCP")
         self._show_busy_indicator("Construction de l'OCP en cours")
         try:
             summary = build_ocp_runtime_summary(
                 settings=self.current_settings(),
                 peak_force_newtons=self.current_force_newtons(),
             )
+            print(f"[SynchroJump] Construction OCP terminee | succes={'oui' if summary.success else 'non'}")
             if summary.success:
                 self.build_status = (
                     "Construction runtime:\n"
@@ -635,6 +648,12 @@ class SynchroJumpApp:
             "- journal IPOPT detaille: terminal"
         )
         self.refresh()
+        self._log_runtime_request("Lancement resolution OCP")
+        print(
+            "[SynchroJump]"
+            f" Options solveur | iterations_max={self.current_solver_iterations()}"
+            f" | cache={'oui' if self.use_cache_var.get() else 'non'}"
+        )
         self._show_busy_indicator("Resolution de l'OCP en cours")
         try:
             summary = solve_ocp_runtime_summary(
@@ -642,6 +661,11 @@ class SynchroJumpApp:
                 peak_force_newtons=self.current_force_newtons(),
                 use_cache=bool(self.use_cache_var.get()),
                 maximum_iterations=self.current_solver_iterations(),
+            )
+            print(
+                "[SynchroJump]"
+                f" Resolution OCP terminee | succes={'oui' if summary.success else 'non'}"
+                f" | cache={'oui' if summary.from_cache else 'non'}"
             )
             if summary.success:
                 self.runtime_solution = summary
