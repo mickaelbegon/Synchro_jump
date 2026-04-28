@@ -9,6 +9,7 @@ from tkinter import ttk
 
 import numpy as np
 
+from synchro_jump.gui.raster_avatar import avatar_rendering_diagnostics, draw_segment_image
 from synchro_jump.modeling import AthleteMorphology, PlanarJumperModelDefinition
 from synchro_jump.optimization import (
     OcpSolveSummary,
@@ -21,6 +22,7 @@ from synchro_jump.optimization import (
 )
 from synchro_jump.optimization.problem import (
     CONTACT_MODEL_COMPLIANT_UNILATERAL,
+    CONTACT_MODEL_NO_PLATFORM,
     CONTACT_MODEL_RIGID_UNILATERAL,
     snap_to_discrete_value,
 )
@@ -32,9 +34,11 @@ class SynchroJumpApp:
     default_solve_iterations = 1000
     max_solve_iterations = 1000
     animation_delay_ms = 80
+    avatar_flip_horizontal = True
     contact_model_labels = {
         CONTACT_MODEL_RIGID_UNILATERAL: "Rigide unilateral",
         CONTACT_MODEL_COMPLIANT_UNILATERAL: "Compliant unilateral",
+        CONTACT_MODEL_NO_PLATFORM: "Sans plateforme",
     }
     contact_model_by_label = {label: key for key, label in contact_model_labels.items()}
 
@@ -63,14 +67,30 @@ class SynchroJumpApp:
         self.runtime_solution: OcpSolveSummary | None = None
         self.animation_playing = False
         self.animation_job: str | None = None
+        self._cached_contact_profile_key = None
+        self._cached_contact_profile: tuple[float, ...] | None = None
+        self._cached_blueprint_key = None
+        self._cached_blueprint = None
+        self._cached_initial_q_key = None
+        self._cached_initial_q: tuple[float, ...] | None = None
+        self._cached_runtime_com_key = None
+        self._cached_runtime_com_trajectory: np.ndarray | None = None
+        self._cached_runtime_com_velocity_key = None
+        self._cached_runtime_com_velocity_trajectory: np.ndarray | None = None
 
         self.build_button = None
         self.solve_button = None
         self.busy_label = None
         self.figure_widget = None
+        self.summary_axis = None
         self.force_axis = None
         self.pose_axis = None
         self.kinematics_axis = None
+        self.kinematics_velocity_axis = None
+        self.joint_angle_axis = None
+        self.joint_torque_axis = None
+        self.play_pause_button = None
+        self.play_pause_text = tk.StringVar(value="▶")
 
         main_frame = ttk.Frame(root, padding=16)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -148,19 +168,26 @@ class SynchroJumpApp:
         self.busy_label = ttk.Label(parent, textvariable=self.busy_var, wraplength=300, justify=tk.LEFT)
 
         ttk.Label(parent, text="Animation trajectoire").pack(anchor=tk.W, pady=(12, 0))
+        animation_frame = ttk.Frame(parent)
+        animation_frame.pack(fill=tk.X, pady=(0, 8))
+        self.play_pause_button = ttk.Button(
+            animation_frame,
+            textvariable=self.play_pause_text,
+            command=self.toggle_animation,
+            width=3,
+        )
+        self.play_pause_button.pack(side=tk.LEFT, padx=(0, 8))
         self.animation_scale = tk.Scale(
-            parent,
+            animation_frame,
             from_=0,
             to=0,
             resolution=1,
             orient=tk.HORIZONTAL,
             variable=self.animation_frame_var,
             command=self._on_animation_frame_change,
-            length=260,
+            length=220,
         )
-        self.animation_scale.pack(fill=tk.X, pady=(0, 8))
-        ttk.Button(parent, text="Lecture / Pause", command=self.toggle_animation).pack(fill=tk.X, pady=(0, 8))
-        ttk.Button(parent, text="Revenir au debut", command=self.reset_animation).pack(fill=tk.X, pady=(0, 8))
+        self.animation_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         ttk.Label(parent, textvariable=self.status_var, wraplength=300, justify=tk.LEFT).pack(
             fill=tk.X, pady=(12, 0)
@@ -184,10 +211,15 @@ class SynchroJumpApp:
             ).pack(fill=tk.BOTH, expand=True)
             return
 
-        figure = Figure(figsize=(12.0, 6.4), dpi=100)
-        self.force_axis = figure.add_subplot(1, 3, 1)
-        self.pose_axis = figure.add_subplot(1, 3, 2)
-        self.kinematics_axis = figure.add_subplot(1, 3, 3)
+        figure = Figure(figsize=(13.6, 7.2), dpi=100)
+        gridspec = figure.add_gridspec(3, 3, width_ratios=(0.95, 0.95, 1.15), height_ratios=(0.52, 1.0, 1.0))
+        self.summary_axis = figure.add_subplot(gridspec[0, 0:2])
+        self.force_axis = figure.add_subplot(gridspec[1:, 0])
+        self.pose_axis = figure.add_subplot(gridspec[1:, 1])
+        self.kinematics_axis = figure.add_subplot(gridspec[0:2, 2])
+        self.kinematics_velocity_axis = self.kinematics_axis.twinx()
+        self.joint_angle_axis = figure.add_subplot(gridspec[2, 2])
+        self.joint_torque_axis = self.joint_angle_axis.twinx()
 
         canvas = FigureCanvasTkAgg(figure, master=parent)
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -198,17 +230,19 @@ class SynchroJumpApp:
 
         self.force_var.set(self.current_force_newtons())
         self.mass_var.set(self.current_mass_kg())
+        self._clear_display_cache()
         self._invalidate_runtime_results()
         self.refresh()
 
     def _on_animation_frame_change(self, _value: str) -> None:
         """Redraw the figures when the animation cursor changes."""
 
-        self.refresh()
+        self.refresh(dynamic_only=True)
 
     def _on_contact_model_change(self, _event=None) -> None:
         """Invalidate runtime results when the contact model changes."""
 
+        self._clear_display_cache()
         self._invalidate_runtime_results()
         self.refresh()
 
@@ -216,6 +250,7 @@ class SynchroJumpApp:
         """Drop runtime build/solve summaries tied to the previous sliders."""
 
         self._stop_animation()
+        self._clear_runtime_cache()
         self.build_status = ""
         self.solution_status = ""
         self._set_ocp_built_state(False)
@@ -223,6 +258,25 @@ class SynchroJumpApp:
         self.animation_frame_var.set(0)
         if hasattr(self, "animation_scale"):
             self.animation_scale.configure(to=0)
+        self._sync_animation_button_label()
+
+    def _clear_display_cache(self) -> None:
+        """Invalidate cached slider-dependent display data."""
+
+        self._cached_contact_profile_key = None
+        self._cached_contact_profile = None
+        self._cached_blueprint_key = None
+        self._cached_blueprint = None
+        self._cached_initial_q_key = None
+        self._cached_initial_q = None
+
+    def _clear_runtime_cache(self) -> None:
+        """Invalidate cached runtime trajectories used only for plotting."""
+
+        self._cached_runtime_com_key = None
+        self._cached_runtime_com_trajectory = None
+        self._cached_runtime_com_velocity_key = None
+        self._cached_runtime_com_velocity_trajectory = None
 
     def _set_ocp_built_state(self, is_built: bool) -> None:
         """Store the OCP build state and refresh the action buttons."""
@@ -252,6 +306,11 @@ class SynchroJumpApp:
         self.busy_var.set("")
         if self.busy_label is not None and self.busy_label.winfo_ismapped():
             self.busy_label.pack_forget()
+
+    def _sync_animation_button_label(self) -> None:
+        """Refresh the compact play/pause button label."""
+
+        self.play_pause_text.set("❚❚" if self.animation_playing else "▶")
 
     def _log_runtime_request(self, action: str) -> None:
         """Print one compact runtime banner in the terminal."""
@@ -304,16 +363,63 @@ class SynchroJumpApp:
 
         return AthleteMorphology(height_m=self.base_settings.athlete_height_m, mass_kg=self.current_mass_kg())
 
+    def current_model_definition(self) -> PlanarJumperModelDefinition:
+        """Return the displayed jumper model matching the selected mode."""
+
+        return PlanarJumperModelDefinition(
+            morphology=self.current_morphology(),
+            floating_base=self.current_contact_model_key() != CONTACT_MODEL_NO_PLATFORM,
+            include_platform_contact=self.current_contact_model_key() != CONTACT_MODEL_NO_PLATFORM,
+        )
+
     def current_profile(self) -> PlatformForceProfile:
         """Return the current force profile selected by the slider."""
 
         return PlatformForceProfile(peak_force_newtons=self.current_force_newtons())
 
+    def _current_blueprint(self):
+        """Return the cached OCP blueprint for the current sliders."""
+
+        cache_key = (self.current_contact_model_key(), self.current_mass_kg(), self.current_force_newtons())
+        if self._cached_blueprint_key != cache_key or self._cached_blueprint is None:
+            self._cached_blueprint = VerticalJumpBioptimOcpBuilder(settings=self.current_settings()).blueprint(
+                self.current_force_newtons()
+            )
+            self._cached_blueprint_key = cache_key
+        return self._cached_blueprint
+
     def current_contact_profile(self) -> tuple[float, ...]:
         """Return the surrogate contact-force profile."""
 
+        cache_key = (self.current_contact_model_key(), self.current_mass_kg(), self.current_force_newtons())
+        cached_key = getattr(self, "_cached_contact_profile_key", None)
+        cached_profile = getattr(self, "_cached_contact_profile", None)
+        if cached_key == cache_key and cached_profile is not None:
+            return cached_profile
+        if self.current_contact_model_key() == CONTACT_MODEL_NO_PLATFORM:
+            self._cached_contact_profile = tuple(0.0 for _ in range(self.base_settings.n_shooting))
+        else:
+            self._cached_contact_profile = self._current_blueprint().contact_force_target()
+        self._cached_contact_profile_key = cache_key
+        return self._cached_contact_profile
+
+    def current_initial_q(self) -> tuple[float, ...]:
+        """Return the cached initial posture aligned on the true exported model when available."""
+
+        cache_key = (self.current_contact_model_key(), self.current_mass_kg())
+        cached_key = getattr(self, "_cached_initial_q_key", None)
+        cached_q = getattr(self, "_cached_initial_q", None)
+        if cached_key == cache_key and cached_q is not None:
+            return cached_q
+
         builder = VerticalJumpBioptimOcpBuilder(settings=self.current_settings())
-        return builder.blueprint(self.current_force_newtons()).contact_force_target()
+        try:
+            model_path = builder.export_model(Path("generated"))
+            self._cached_initial_q = builder.aligned_initial_joint_configuration_rad(model_path=model_path)
+        except Exception:
+            self._cached_initial_q = self.current_model_definition().initial_joint_configuration_rad
+        self._cached_initial_q_key = cache_key
+        return self._cached_initial_q
 
     def _runtime_q_trajectory(self) -> np.ndarray | None:
         """Return the full runtime generalized-coordinate trajectory when available."""
@@ -331,12 +437,122 @@ class SynchroJumpApp:
             return q_roots
         return self.runtime_solution.state_trajectories.get("q")
 
-    def refresh(self) -> None:
+    def _runtime_joint_angle_trajectory_deg(self) -> dict[str, np.ndarray] | None:
+        """Return the knee and hip angle trajectories in degrees."""
+
+        q_trajectory = self._runtime_q_trajectory()
+        if q_trajectory is None or q_trajectory.shape[0] < 2:
+            return None
+        return {
+            "Genou": np.degrees(q_trajectory[-2, :]),
+            "Hanche": np.degrees(q_trajectory[-1, :]),
+        }
+
+    def _runtime_joint_torque_trajectory_nm(self) -> tuple[np.ndarray, dict[str, np.ndarray]] | None:
+        """Return the knee and hip torque trajectories in Nm."""
+
+        if self.runtime_solution is None:
+            return None
+
+        tau_trajectory = self.runtime_solution.control_trajectories.get("tau_joints")
+        if tau_trajectory is None or tau_trajectory.shape[0] < 2:
+            return None
+
+        control_time = self.runtime_solution.time
+        if tau_trajectory.shape[1] == max(control_time.size - 1, 0):
+            control_time = control_time[:-1]
+        elif tau_trajectory.shape[1] != control_time.size and tau_trajectory.shape[1] > 0:
+            control_time = np.linspace(control_time[0], control_time[-1], tau_trajectory.shape[1])
+
+        return control_time, {
+            "Genou": tau_trajectory[-2, :],
+            "Hanche": tau_trajectory[-1, :],
+        }
+
+    def _runtime_com_planar_trajectory(self, morphology: AthleteMorphology) -> np.ndarray | None:
+        """Return the runtime CoM planar trajectory `(x, z)` from the displayed model."""
+
+        q_trajectory = self._runtime_q_trajectory()
+        if q_trajectory is None or q_trajectory.shape[1] == 0:
+            return None
+
+        cache_key = (
+            id(self.runtime_solution),
+            morphology.height_m,
+            morphology.mass_kg,
+            self.current_contact_model_key(),
+        )
+        cached_key = getattr(self, "_cached_runtime_com_key", None)
+        cached_trajectory = getattr(self, "_cached_runtime_com_trajectory", None)
+        if cached_key == cache_key and cached_trajectory is not None:
+            return cached_trajectory
+
+        model_definition = self.current_model_definition()
+        com_trajectory = np.zeros((2, q_trajectory.shape[1]), dtype=float)
+        for frame_index in range(q_trajectory.shape[1]):
+            com_x, com_z = model_definition.center_of_mass_position(tuple(q_trajectory[:, frame_index].tolist()))
+            com_trajectory[:, frame_index] = (com_x, com_z)
+        self._cached_runtime_com_key = cache_key
+        self._cached_runtime_com_trajectory = com_trajectory
+        return self._cached_runtime_com_trajectory
+
+    def _runtime_com_planar_velocity_trajectory(
+        self,
+        morphology: AthleteMorphology,
+    ) -> np.ndarray | None:
+        """Return the finite-difference planar CoM velocity `(vx, vz)` along the runtime solution."""
+
+        if self.runtime_solution is None or self.runtime_solution.time.size < 2:
+            return None
+
+        cache_key = (
+            id(self.runtime_solution),
+            morphology.height_m,
+            morphology.mass_kg,
+            self.current_contact_model_key(),
+        )
+        cached_velocity_key = getattr(self, "_cached_runtime_com_velocity_key", None)
+        cached_velocity = getattr(self, "_cached_runtime_com_velocity_trajectory", None)
+        if cached_velocity_key == cache_key and cached_velocity is not None:
+            return cached_velocity
+
+        com_trajectory = self._runtime_com_planar_trajectory(morphology)
+        if com_trajectory is None:
+            return None
+
+        time = np.asarray(self.runtime_solution.time, dtype=float)
+        if np.any(np.diff(time) <= 0.0):
+            return None
+
+        velocities = np.zeros_like(com_trajectory)
+        velocities[0, :] = np.gradient(com_trajectory[0, :], time)
+        velocities[1, :] = np.gradient(com_trajectory[1, :], time)
+        self._cached_runtime_com_velocity_key = cache_key
+        self._cached_runtime_com_velocity_trajectory = velocities
+        return self._cached_runtime_com_velocity_trajectory
+
+    def refresh(self, *, dynamic_only: bool = False) -> None:
         """Refresh the figures and the textual summary."""
 
-        contact_profile = self.current_contact_profile()
         morphology = self.current_morphology()
-        blueprint = VerticalJumpBioptimOcpBuilder(settings=self.current_settings()).blueprint(self.current_force_newtons())
+        if dynamic_only:
+            if (
+                self.pose_axis is None
+                or self.kinematics_axis is None
+                or self.kinematics_velocity_axis is None
+                or self.joint_angle_axis is None
+                or self.joint_torque_axis is None
+                or self.figure_widget is None
+            ):
+                return
+            self._draw_pose_figure(morphology)
+            self._draw_kinematics_figure()
+            self._draw_joint_figure()
+            self.figure_widget.draw_idle()
+            return
+
+        contact_profile = self.current_contact_profile()
+        blueprint = self._current_blueprint()
         takeoff_velocity = estimate_takeoff_velocity_from_contact_profile(
             contact_force_profile_newtons=contact_profile,
             athlete_mass_kg=morphology.mass_kg,
@@ -357,10 +573,18 @@ class SynchroJumpApp:
                 f"- dynamique: {blueprint.dynamics_name}\n"
                 f"- modele contact: {self.contact_model_var.get()}\n"
                 f"- label contact: {blueprint.contact_model_name}\n"
-                f"- contact physique: k={self.base_settings.contact_stiffness_n_per_m:.0f} N/m, "
-                f"c={self.base_settings.contact_damping_n_s_per_m:.0f} N.s/m\n"
-                "- decollage impose: force contact finale = 0 N"
+                + (
+                    (
+                        f"- contact physique: k={self.base_settings.contact_stiffness_n_per_m:.0f} N/m, "
+                        f"c={self.base_settings.contact_damping_n_s_per_m:.0f} N.s/m\n"
+                        "- decollage impose: force contact finale = 0 N"
+                    )
+                    if self.current_contact_model_key() != CONTACT_MODEL_NO_PLATFORM
+                    else "- mode simplifie: sans plateforme ni force de contact explicite\n"
+                    "- force exterieure equivalente affichee: masse x (acceleration verticale du CoM + g)"
+                )
             ),
+            f"Avatar:\n- {self._avatar_status_line()}",
         ]
         if self.runtime_solution is not None and self.runtime_solution.time.size:
             frame_index = self.current_animation_frame()
@@ -379,17 +603,64 @@ class SynchroJumpApp:
         self.status_var.set("\n\n".join(status_lines))
 
         if (
-            self.force_axis is None
+            self.summary_axis is None
+            or self.force_axis is None
             or self.pose_axis is None
             or self.kinematics_axis is None
+            or self.kinematics_velocity_axis is None
+            or self.joint_angle_axis is None
+            or self.joint_torque_axis is None
             or self.figure_widget is None
         ):
             return
 
+        self._draw_summary_table(blueprint=blueprint, surrogate_apex_height_m=apex_height)
         self._draw_force_figure(contact_profile)
         self._draw_pose_figure(morphology)
         self._draw_kinematics_figure()
+        self._draw_joint_figure()
         self.figure_widget.draw_idle()
+
+    def _draw_summary_table(self, *, blueprint, surrogate_apex_height_m: float) -> None:
+        """Draw one compact table summarizing the current OCP conditions and jump height."""
+
+        self.summary_axis.clear()
+        self.summary_axis.axis("off")
+
+        displayed_height = surrogate_apex_height_m
+        height_source = "Surrogate"
+        if self.runtime_solution is not None and self.runtime_solution.predicted_apex_height_m is not None:
+            displayed_height = self.runtime_solution.predicted_apex_height_m
+            height_source = "Runtime"
+
+        table_rows = [
+            ("Type d'OCP", blueprint.dynamics_name.replace("_", " ")),
+            ("Modele contact", self.contact_model_var.get()),
+            ("Force plateforme", f"{self.current_force_newtons():.0f} N"),
+            ("Masse sauteur", f"{self.current_mass_kg():.0f} kg"),
+            ("Hauteur du saut", f"{displayed_height:.3f} m ({height_source})"),
+        ]
+
+        table = self.summary_axis.table(
+            cellText=[[label, value] for label, value in table_rows],
+            colLabels=["Condition", "Valeur"],
+            cellLoc="left",
+            colLoc="left",
+            loc="center",
+            bbox=[0.0, 0.0, 1.0, 1.0],
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1.0, 1.15)
+        for (row_index, col_index), cell in table.get_celld().items():
+            cell.set_edgecolor("#d0d7de")
+            if row_index == 0:
+                cell.set_facecolor("#e9f1f7")
+                cell.set_text_props(weight="bold")
+            elif col_index == 0:
+                cell.set_facecolor("#f7f7f7")
+
+        self.summary_axis.set_title("Synthese du saut", fontsize=11, pad=6.0)
 
     def _draw_force_figure(self, contact_profile: tuple[float, ...]) -> None:
         """Draw the platform and contact-force profiles."""
@@ -402,7 +673,8 @@ class SynchroJumpApp:
         actuation = [profile.force_at(time) for time in times]
 
         self.force_axis.clear()
-        self.force_axis.plot(times, actuation, color="#d1495b", linewidth=2.2, label="Force plateforme")
+        if self.current_contact_model_key() != CONTACT_MODEL_NO_PLATFORM:
+            self.force_axis.plot(times, actuation, color="#d1495b", linewidth=2.2, label="Force plateforme")
         self.force_axis.plot(times, contact_profile, color="#2b59c3", linewidth=2.2, label="Contact surrogate")
         if self.runtime_solution is not None:
             if self.runtime_solution.platform_force_trajectory_n.size:
@@ -420,7 +692,11 @@ class SynchroJumpApp:
                     self.runtime_solution.contact_force_trajectory_n,
                     color="#0b6e4f",
                     linewidth=2.4,
-                    label=f"Contact runtime ({self.contact_model_var.get()})",
+                    label=(
+                        "Force exterieure runtime (m*(a_com,z + g))"
+                        if self.current_contact_model_key() == CONTACT_MODEL_NO_PLATFORM
+                        else f"Contact runtime ({self.contact_model_var.get()})"
+                    ),
                 )
             if self.runtime_solution.final_time_s is not None:
                 self.force_axis.axvline(
@@ -450,44 +726,78 @@ class SynchroJumpApp:
     def _draw_pose_figure(self, morphology: AthleteMorphology) -> None:
         """Draw the initial and optimized sagittal stick figures."""
 
-        initial_points = self._pose_points_from_q(
-            morphology,
-            PlanarJumperModelDefinition(morphology=morphology).initial_joint_configuration_rad,
-        )
+        initial_points = self._pose_points_from_q(morphology, self.current_initial_q())
+        avatar_available, _ = avatar_rendering_diagnostics()
 
         self.pose_axis.clear()
-        self._draw_stick_figure(
-            self.pose_axis,
-            initial_points,
-            color="#6b6b6b",
-            label="Posture initiale",
-            linestyle="--",
-            alpha=0.85,
-        )
+        if avatar_available:
+            self._draw_raster_avatar(self.pose_axis, initial_points, alpha=0.22)
+            self.pose_axis.plot(
+                [],
+                [],
+                color="#6b6b6b",
+                linewidth=3.0,
+                linestyle="--",
+                alpha=0.85,
+                label="Posture initiale",
+            )
+        else:
+            self._draw_stick_figure(
+                self.pose_axis,
+                initial_points,
+                color="#6b6b6b",
+                label="Posture initiale",
+                linestyle="--",
+                alpha=0.85,
+            )
 
         q_trajectory = self._runtime_q_trajectory()
-        if q_trajectory is not None and q_trajectory.shape[0] >= 5:
-                sample_count = min(4, q_trajectory.shape[1])
-                sample_indices = np.linspace(0, q_trajectory.shape[1] - 1, sample_count, dtype=int)
-                sample_colors = ("#a1c181", "#619b8a", "#216869", "#c44536")
-                for sample_rank, sample_index in enumerate(sample_indices):
-                    sample_q = tuple(q_trajectory[:, sample_index].tolist())
-                    sample_points = self._pose_points_from_q(morphology, sample_q)
-                    self._draw_stick_figure(
-                        self.pose_axis,
-                        sample_points,
-                        color=sample_colors[sample_rank],
-                        label=(
-                            "Posture fin OCP"
-                            if sample_rank == len(sample_indices) - 1
-                            else f"Snapshot {sample_rank + 1}"
-                        ),
-                        linestyle="-",
-                        alpha=0.45 + 0.15 * sample_rank,
+        if q_trajectory is not None and q_trajectory.shape[0] >= 3:
+            com_trajectory = self._runtime_com_planar_trajectory(morphology)
+            com_velocity_trajectory = self._runtime_com_planar_velocity_trajectory(morphology)
+            if com_trajectory is not None:
+                self.pose_axis.plot(
+                    com_trajectory[0, :],
+                    com_trajectory[1, :],
+                    color="#577590",
+                    linewidth=1.0,
+                    linestyle=(0, (2, 2)),
+                    alpha=0.9,
+                    label="Trajectoire CoM",
+                )
+                if com_velocity_trajectory is not None:
+                    highlighted_frames = sorted(
+                        {
+                            min(frame_target - 1, q_trajectory.shape[1] - 1)
+                            for frame_target in (25, 50, 75, 100)
+                            if q_trajectory.shape[1] > 0
+                        }
                     )
-                animation_index = self.current_animation_frame()
-                animated_q = tuple(q_trajectory[:, animation_index].tolist())
-                animated_points = self._pose_points_from_q(morphology, animated_q)
+                    arrow_scale = 0.06
+                    for frame_index in highlighted_frames:
+                        com_position = com_trajectory[:, frame_index]
+                        com_velocity = com_velocity_trajectory[:, frame_index]
+                        speed = float(np.linalg.norm(com_velocity))
+                        self.pose_axis.annotate(
+                            "",
+                            xy=(
+                                com_position[0] + arrow_scale * com_velocity[0],
+                                com_position[1] + arrow_scale * com_velocity[1],
+                            ),
+                            xytext=(com_position[0], com_position[1]),
+                            arrowprops=dict(arrowstyle="->", color="#577590", lw=0.8, alpha=0.8),
+                        )
+                        self.pose_axis.text(
+                            com_position[0] + 0.015,
+                            com_position[1] + 0.015,
+                            f"{speed:.4f} m/s",
+                            color="#577590",
+                            fontsize=8,
+                        )
+            animation_index = self.current_animation_frame()
+            animated_q = tuple(q_trajectory[:, animation_index].tolist())
+            animated_points = self._pose_points_from_q(morphology, animated_q)
+            if not self._draw_raster_avatar(self.pose_axis, animated_points, alpha=1.0):
                 self._draw_stick_figure(
                     self.pose_axis,
                     animated_points,
@@ -495,6 +805,52 @@ class SynchroJumpApp:
                     label="Frame animee",
                     linestyle="-",
                     alpha=1.0,
+                )
+            if com_trajectory is not None:
+                current_com = com_trajectory[:, animation_index]
+                self.pose_axis.scatter(
+                    [current_com[0]],
+                    [current_com[1]],
+                    color="#277da1",
+                    s=32,
+                    zorder=6,
+                    label="CoM courant",
+                )
+            if self.runtime_solution is not None and self.runtime_solution.contact_force_trajectory_n.size:
+                reaction_force_ap = 0.0
+                if self.runtime_solution.external_force_ap_trajectory_n.size:
+                    reaction_force_ap = float(self.runtime_solution.external_force_ap_trajectory_n[animation_index])
+                reaction_force_vertical = float(self.runtime_solution.contact_force_trajectory_n[animation_index])
+                max_reaction_force = max(
+                    float(
+                        np.max(
+                            np.hypot(
+                                np.asarray(self.runtime_solution.external_force_ap_trajectory_n, dtype=float)
+                                if self.runtime_solution.external_force_ap_trajectory_n.size
+                                else np.zeros_like(self.runtime_solution.contact_force_trajectory_n),
+                                np.asarray(self.runtime_solution.contact_force_trajectory_n, dtype=float),
+                            )
+                        )
+                    ),
+                    1.0,
+                )
+                reaction_scale = 0.28 * morphology.height_m / max_reaction_force
+                foot_point = animated_points["foot"]
+                self.pose_axis.annotate(
+                    "",
+                    xy=(
+                        foot_point[0] + reaction_scale * reaction_force_ap,
+                        foot_point[1] + reaction_scale * reaction_force_vertical,
+                    ),
+                    xytext=foot_point,
+                    arrowprops=dict(arrowstyle="->", color="#90be6d", lw=1.1, alpha=0.9),
+                )
+                self.pose_axis.text(
+                    foot_point[0] + 0.015,
+                    foot_point[1] + reaction_scale * reaction_force_vertical + 0.015,
+                    f"Fx={reaction_force_ap:.1f} N | Fz={reaction_force_vertical:.1f} N",
+                    color="#588157",
+                    fontsize=8,
                 )
 
         self.pose_axis.plot([-0.35, 0.35], [0.0, 0.0], color="#8c5e34", linewidth=4.0)
@@ -530,10 +886,60 @@ class SynchroJumpApp:
             label=label,
         )
 
+    def _avatar_status_line(self) -> str:
+        """Return one concise status line for raster avatar availability."""
+
+        available, message = avatar_rendering_diagnostics()
+        return message if available else f"indisponible, {message}"
+
+    def _draw_raster_avatar(
+        self,
+        axis,
+        points: dict[str, tuple[float, float]],
+        *,
+        alpha: float = 1.0,
+    ) -> bool:
+        """Draw the animated avatar with raster segments when the assets are available."""
+
+        available, _ = avatar_rendering_diagnostics()
+        if not available:
+            return False
+
+        ok = True
+        ok &= draw_segment_image(
+            axis,
+            "leg_foot",
+            distal_point=points["foot"],
+            proximal_point=points["knee"],
+            alpha=alpha,
+            flip_horizontal=self.avatar_flip_horizontal,
+            zorder=4.0,
+        )
+        ok &= draw_segment_image(
+            axis,
+            "thigh",
+            distal_point=points["knee"],
+            proximal_point=points["hip"],
+            alpha=alpha,
+            flip_horizontal=self.avatar_flip_horizontal,
+            zorder=4.2,
+        )
+        ok &= draw_segment_image(
+            axis,
+            "trunk",
+            distal_point=points["hip"],
+            proximal_point=points["head"],
+            alpha=alpha,
+            flip_horizontal=self.avatar_flip_horizontal,
+            zorder=4.4,
+        )
+        return ok
+
     def _draw_kinematics_figure(self) -> None:
         """Draw runtime kinematics when one solved trajectory is available."""
 
         self.kinematics_axis.clear()
+        self.kinematics_velocity_axis.clear()
         if self.runtime_solution is None or self.runtime_solution.time.size == 0:
             self.kinematics_axis.text(
                 0.5,
@@ -546,6 +952,7 @@ class SynchroJumpApp:
             self.kinematics_axis.set_title("Resultat runtime")
             self.kinematics_axis.set_xticks([])
             self.kinematics_axis.set_yticks([])
+            self.kinematics_velocity_axis.set_yticks([])
             return
 
         time = self.runtime_solution.time
@@ -555,7 +962,15 @@ class SynchroJumpApp:
             self.runtime_solution.com_height_trajectory_m,
             color="#3a7d44",
             linewidth=2.2,
-            label="Hauteur CoM",
+            label="Position CoM",
+        )
+        self.kinematics_velocity_axis.plot(
+            time,
+            self.runtime_solution.com_vertical_velocity_trajectory_m_s,
+            color="#577590",
+            linewidth=1.8,
+            linestyle="--",
+            label="Vitesse verticale CoM",
         )
 
         platform_position = self.runtime_solution.state_trajectories.get("platform_position")
@@ -576,10 +991,78 @@ class SynchroJumpApp:
         )
 
         self.kinematics_axis.set_xlabel("Temps (s)")
-        self.kinematics_axis.set_ylabel("Hauteur (m)")
+        self.kinematics_axis.set_ylabel("Position (m)")
+        self.kinematics_velocity_axis.set_ylabel("Vitesse CoM (m/s)")
+        self.kinematics_velocity_axis.yaxis.set_label_position("right")
+        self.kinematics_velocity_axis.yaxis.tick_right()
         self.kinematics_axis.set_title("Cinematique runtime")
         self.kinematics_axis.grid(alpha=0.25)
-        self.kinematics_axis.legend(loc="best")
+        position_handles, position_labels = self.kinematics_axis.get_legend_handles_labels()
+        velocity_handles, velocity_labels = self.kinematics_velocity_axis.get_legend_handles_labels()
+        self.kinematics_axis.legend(position_handles + velocity_handles, position_labels + velocity_labels, loc="best")
+
+    def _draw_joint_figure(self) -> None:
+        """Draw the knee/hip angles and torques underneath the runtime kinematics."""
+
+        self.joint_angle_axis.clear()
+        self.joint_torque_axis.clear()
+        if self.runtime_solution is None or self.runtime_solution.time.size == 0:
+            self.joint_angle_axis.text(
+                0.5,
+                0.5,
+                "Angles et couples\nindisponibles sans solution.",
+                ha="center",
+                va="center",
+                transform=self.joint_angle_axis.transAxes,
+            )
+            self.joint_angle_axis.set_title("Angles et couples")
+            self.joint_angle_axis.set_xticks([])
+            self.joint_angle_axis.set_yticks([])
+            self.joint_torque_axis.set_yticks([])
+            return
+
+        time = self.runtime_solution.time
+        frame_index = self.current_animation_frame()
+        angle_trajectories = self._runtime_joint_angle_trajectory_deg()
+        torque_bundle = self._runtime_joint_torque_trajectory_nm()
+
+        if angle_trajectories is not None:
+            self.joint_angle_axis.plot(time, angle_trajectories["Genou"], color="#33658a", linewidth=2.0, label="Genou (deg)")
+            self.joint_angle_axis.plot(time, angle_trajectories["Hanche"], color="#86bbd8", linewidth=2.0, label="Hanche (deg)")
+        if torque_bundle is not None:
+            control_time, torque_trajectories = torque_bundle
+            self.joint_torque_axis.step(
+                control_time,
+                torque_trajectories["Genou"],
+                color="#f26419",
+                linewidth=1.8,
+                where="post",
+                label="Tau genou (Nm)",
+            )
+            self.joint_torque_axis.step(
+                control_time,
+                torque_trajectories["Hanche"],
+                color="#f6ae2d",
+                linewidth=1.8,
+                where="post",
+                label="Tau hanche (Nm)",
+            )
+
+        self.joint_angle_axis.axvline(
+            time[frame_index],
+            color="#f94144",
+            linewidth=1.5,
+            linestyle="--",
+        )
+        self.joint_angle_axis.set_xlabel("Temps (s)")
+        self.joint_angle_axis.set_ylabel("Angle (deg)")
+        self.joint_torque_axis.set_ylabel("Couple (Nm)")
+        self.joint_angle_axis.set_title("Angles et couples articulaires")
+        self.joint_angle_axis.grid(alpha=0.25)
+
+        angle_handles, angle_labels = self.joint_angle_axis.get_legend_handles_labels()
+        torque_handles, torque_labels = self.joint_torque_axis.get_legend_handles_labels()
+        self.joint_angle_axis.legend(angle_handles + torque_handles, angle_labels + torque_labels, loc="best")
 
     def _pose_points_from_q(
         self,
@@ -589,7 +1072,13 @@ class SynchroJumpApp:
         """Compute the displayed joint positions for one generalized state."""
 
         lengths = morphology.segment_lengths
-        q_root_x, q_root_z, q_root_rot, q_knee, q_hip = q_values
+        if len(q_values) == 5:
+            q_root_x, q_root_z, q_root_rot, q_knee, q_hip = q_values
+        elif len(q_values) == 3:
+            q_root_x, q_root_z = 0.0, 0.0
+            q_root_rot, q_knee, q_hip = q_values
+        else:
+            raise ValueError("The displayed jumper pose expects 3 or 5 generalized coordinates")
 
         def advance(origin: tuple[float, float], angle: float, length: float) -> tuple[float, float]:
             return (origin[0] + length * math.cos(angle), origin[1] + length * math.sin(angle))
@@ -671,6 +1160,7 @@ class SynchroJumpApp:
                 self.runtime_solution = summary
                 self.animation_frame_var.set(0)
                 self.animation_scale.configure(to=max(summary.time.size - 1, 0))
+                self._sync_animation_button_label()
                 self.solution_status = (
                     "Resolution runtime:\n"
                     f"- succes: oui\n"
@@ -687,6 +1177,7 @@ class SynchroJumpApp:
             else:
                 self.runtime_solution = None
                 self.animation_scale.configure(to=0)
+                self._sync_animation_button_label()
                 self.solution_status = f"Resolution runtime:\n- succes: non\n- message: {summary.message}"
             self.refresh()
         finally:
@@ -700,19 +1191,20 @@ class SynchroJumpApp:
 
         if self.animation_playing:
             self._stop_animation()
-            self.refresh()
+            self.refresh(dynamic_only=True)
             return
 
         self.animation_playing = True
+        self._sync_animation_button_label()
         self._schedule_animation_step()
-        self.refresh()
+        self.refresh(dynamic_only=True)
 
     def reset_animation(self) -> None:
         """Return the animation cursor to the first frame."""
 
         self._stop_animation()
         self.animation_frame_var.set(0)
-        self.refresh()
+        self.refresh(dynamic_only=True)
 
     def _schedule_animation_step(self) -> None:
         """Schedule the next animation frame if playback is active."""
@@ -732,7 +1224,7 @@ class SynchroJumpApp:
         if next_index >= self.runtime_solution.time.size:
             next_index = 0
         self.animation_frame_var.set(next_index)
-        self.refresh()
+        self.refresh(dynamic_only=True)
         self._schedule_animation_step()
 
     def _stop_animation(self) -> None:
@@ -742,6 +1234,7 @@ class SynchroJumpApp:
         if self.animation_job is not None:
             self.root.after_cancel(self.animation_job)
             self.animation_job = None
+        self._sync_animation_button_label()
 
     def export_model(self) -> None:
         """Export the current `.bioMod` file and append the path to the status text."""
@@ -756,5 +1249,6 @@ def launch_app() -> None:
     """Start the interactive GUI."""
 
     root = tk.Tk()
-    SynchroJumpApp(root)
+    app = SynchroJumpApp(root)
+    print(f"[SynchroJump] Avatar raster | {app._avatar_status_line()}")
     root.mainloop()

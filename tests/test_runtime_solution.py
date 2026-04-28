@@ -8,7 +8,9 @@ import numpy as np
 
 from synchro_jump.optimization.problem import CONTACT_MODEL_COMPLIANT_UNILATERAL, VerticalJumpOcpSettings
 from synchro_jump.optimization.runtime_solution import (
+    _add_platform_force_to_numeric_generalized_force,
     _configure_ipopt_solver,
+    ensure_local_hsl_library,
     solve_ocp_runtime_summary,
     summarize_solved_ocp,
 )
@@ -89,6 +91,7 @@ def test_summarize_solved_ocp_extracts_runtime_metrics(tmp_path: Path) -> None:
         total_duration_s=2.0,
         com_evaluator=fake_com_evaluator,
         contact_force_evaluator=fake_contact_evaluator,
+        external_force_ap_evaluator=lambda *_args, **_kwargs: np.array([10.0, 15.0, 20.0]),
     )
 
     assert summary.success
@@ -108,6 +111,7 @@ def test_summarize_solved_ocp_extracts_runtime_metrics(tmp_path: Path) -> None:
     assert summary.control_trajectories["tau_joints"].shape == (2, 3)
     assert summary.com_height_trajectory_m.shape == (3,)
     assert np.allclose(summary.contact_force_trajectory_n, [450.0, 180.0, 0.0])
+    assert np.allclose(summary.external_force_ap_trajectory_n, [10.0, 15.0, 20.0])
     assert np.allclose(summary.platform_force_trajectory_n, [1100.0, 1100.0, 1050.0])
 
 
@@ -168,6 +172,7 @@ def test_configure_ipopt_solver_enables_iteration_and_timing_logs() -> None:
         def __init__(self) -> None:
             self.maximum_iterations = None
             self.print_level = None
+            self.linear_solver = None
             self.options = {}
 
         def set_maximum_iterations(self, value: int) -> None:
@@ -176,15 +181,91 @@ def test_configure_ipopt_solver_enables_iteration_and_timing_logs() -> None:
         def set_print_level(self, value: int) -> None:
             self.print_level = value
 
+        def set_linear_solver(self, value: str) -> None:
+            self.linear_solver = value
+
         def set_option_unsafe(self, value, name: str) -> None:
             self.options[name] = value
 
     solver = _FakeSolver()
 
-    _configure_ipopt_solver(solver, maximum_iterations=1000, print_level=5)
+    _configure_ipopt_solver(
+        solver,
+        maximum_iterations=1000,
+        print_level=5,
+        linear_solver="ma57",
+        hsl_library_path="/tmp/libhsl.dylib",
+    )
 
     assert solver.maximum_iterations == 1000
     assert solver.print_level == 5
+    assert solver.linear_solver == "ma57"
+    assert solver.options["hsllib"] == "/tmp/libhsl.dylib"
     assert solver.options["print_timing_statistics"] == "yes"
     assert solver.options["print_frequency_iter"] == 1
     assert solver.options["print_frequency_time"] == 0
+
+
+def test_ensure_local_hsl_library_copies_one_candidate(tmp_path: Path) -> None:
+    """The HSL helper should copy one discovered library into the project-local folder."""
+
+    source_library = tmp_path / "source" / "libhsl.dylib"
+    source_library.parent.mkdir(parents=True)
+    source_library.write_bytes(b"fake hsl")
+
+    copied_library = ensure_local_hsl_library(
+        local_dir=tmp_path / "local",
+        candidate_paths=(source_library,),
+    )
+
+    assert copied_library == tmp_path / "local" / "libhsl.dylib"
+    assert copied_library.read_bytes() == b"fake hsl"
+
+
+def test_platform_force_is_added_to_vertical_root_translation() -> None:
+    """The platform actuation should feed the vertical root generalized force."""
+
+    generalized_force = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+
+    updated_force = _add_platform_force_to_numeric_generalized_force(generalized_force, 1100.0)
+
+    assert np.allclose(updated_force, [1.0, 1102.0, 3.0, 4.0, 5.0])
+
+
+def test_summarize_solved_ocp_can_use_no_platform_equivalent_contact(tmp_path: Path) -> None:
+    """The runtime summary should accept an equivalent contact reconstructed from CoM acceleration."""
+
+    model_path = tmp_path / "jumper.bioMod"
+    model_path.write_text("version 4\n", encoding="utf-8")
+
+    def fake_com_evaluator(_model_path: str | Path, _state_trajectories: dict[str, np.ndarray]):
+        return np.array([0.9, 1.0, 1.1]), np.array([0.0, 0.4, 0.8])
+
+    def fake_contact_evaluator(
+        _model_path: str | Path,
+        _state_trajectories: dict[str, np.ndarray],
+        _control_trajectories: dict[str, np.ndarray],
+        **kwargs,
+    ):
+        assert kwargs["contact_model"] == "no_platform"
+        assert kwargs["athlete_mass_kg"] == 50.0
+        return np.zeros(3), np.array([0.0, 25.0, 50.0]), np.array([0.0, 0.5, 1.0])
+
+    summary = summarize_solved_ocp(
+        _FakeSolution(),
+        model_path=model_path,
+        requested_iterations=5,
+        n_phases=1,
+        merge_nodes_token="nodes",
+        peak_force_newtons=1100.0,
+        platform_mass_kg=80.0,
+        athlete_mass_kg=50.0,
+        contact_model="no_platform",
+        total_duration_s=2.0,
+        com_evaluator=fake_com_evaluator,
+        contact_force_evaluator=fake_contact_evaluator,
+    )
+
+    assert summary.contact_model == "no_platform"
+    assert np.allclose(summary.contact_force_trajectory_n, [0.0, 25.0, 50.0])
+    assert np.allclose(summary.platform_force_trajectory_n, [0.0, 0.0, 0.0])

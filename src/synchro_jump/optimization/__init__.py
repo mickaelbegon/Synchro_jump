@@ -13,6 +13,7 @@ from synchro_jump.optimization.force_profile import PlatformForceProfile
 from synchro_jump.optimization.initial_guess import OcpInitialGuess, build_linear_inverse_dynamics_initial_guess
 from synchro_jump.optimization.problem import (
     CONTACT_MODEL_COMPLIANT_UNILATERAL,
+    CONTACT_MODEL_NO_PLATFORM,
     CONTACT_MODEL_RIGID_UNILATERAL,
     VerticalJumpOcpSettings,
     discrete_contact_models,
@@ -33,6 +34,7 @@ from synchro_jump.optimization.surrogate import estimate_takeoff_velocity_from_c
 __all__ = [
     "CoupledPlatformSolution",
     "CONTACT_MODEL_COMPLIANT_UNILATERAL",
+    "CONTACT_MODEL_NO_PLATFORM",
     "CONTACT_MODEL_RIGID_UNILATERAL",
     "OcpInitialGuess",
     "OcpRuntimeSummary",

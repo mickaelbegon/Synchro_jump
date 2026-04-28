@@ -51,3 +51,20 @@ def test_initial_alignment_keeps_requested_knee_and_hip_flexion() -> None:
     assert q_aligned[2] != pytest.approx(q_crouched[2])
     assert q_aligned[3] == pytest.approx(-math.radians(100.0))
     assert q_aligned[4] == pytest.approx(math.radians(100.0))
+
+
+def test_no_platform_model_definition_exposes_three_dofs_and_no_contact() -> None:
+    """The simplified no-platform model should keep only the three rotational DoFs."""
+
+    model_definition = PlanarJumperModelDefinition(
+        AthleteMorphology(height_m=1.60, mass_kg=50.0),
+        floating_base=False,
+        include_platform_contact=False,
+    )
+
+    biomod_text = model_definition.to_biomod_text()
+
+    assert model_definition.q_size == 3
+    assert model_definition.tau_size == 3
+    assert "translations\txz" not in biomod_text
+    assert "contact\tplatform_contact" not in biomod_text

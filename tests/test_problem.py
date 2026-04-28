@@ -6,6 +6,7 @@ import pytest
 
 from synchro_jump.optimization.problem import (
     CONTACT_MODEL_COMPLIANT_UNILATERAL,
+    CONTACT_MODEL_NO_PLATFORM,
     CONTACT_MODEL_RIGID_UNILATERAL,
     VerticalJumpOcpSettings,
     discrete_contact_models,
@@ -43,6 +44,7 @@ def test_contact_model_values_match_supported_modes() -> None:
     assert discrete_contact_models() == (
         CONTACT_MODEL_RIGID_UNILATERAL,
         CONTACT_MODEL_COMPLIANT_UNILATERAL,
+        CONTACT_MODEL_NO_PLATFORM,
     )
 
 
@@ -88,3 +90,36 @@ def test_settings_reject_non_boolean_expand_dynamics() -> None:
 
     with pytest.raises(ValueError, match="expand_dynamics"):
         VerticalJumpOcpSettings(athlete_mass_kg=50.0, expand_dynamics="yes")
+
+
+def test_settings_reject_empty_ipopt_linear_solver() -> None:
+    """The IPOPT linear-solver selection should stay explicit."""
+
+    with pytest.raises(ValueError, match="ipopt_linear_solver"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, ipopt_linear_solver="")
+
+
+def test_default_joint_torque_bounds_match_requested_limit() -> None:
+    """The default articulated torque bounds should now allow +/-1000 Nm."""
+
+    settings = VerticalJumpOcpSettings(athlete_mass_kg=50.0)
+
+    assert settings.tau_min_nm == -1000.0
+    assert settings.tau_max_nm == 1000.0
+
+
+def test_settings_reject_non_positive_angular_momentum_bound() -> None:
+    """The angular-momentum bound should remain strictly positive."""
+
+    with pytest.raises(ValueError, match="angular_momentum_bound_n_s"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, angular_momentum_bound_n_s=0.0)
+
+
+def test_settings_reject_torque_regularization_tail_outside_valid_range() -> None:
+    """The excluded torque-regularization tail should stay within the shooting horizon."""
+
+    with pytest.raises(ValueError, match="torque_regularization_excluded_tail_nodes"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, torque_regularization_excluded_tail_nodes=-1)
+
+    with pytest.raises(ValueError, match="torque_regularization_excluded_tail_nodes"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, torque_regularization_excluded_tail_nodes=100)

@@ -27,13 +27,18 @@ def complete_extension_configuration(
     """Return one fully extended generalized configuration."""
 
     q_final = np.asarray(initial_q, dtype=float).reshape((-1,)).copy()
-    if q_final.shape[0] != 5:
-        raise ValueError("The reduced jumper initial guess expects 5 generalized coordinates")
+    if q_final.shape[0] not in (3, 5):
+        raise ValueError("The reduced jumper initial guess expects 3 or 5 generalized coordinates")
 
-    q_final[1] = final_platform_height_m
-    q_final[2] = 0.0
-    q_final[3] = 0.0
-    q_final[4] = 0.0
+    if q_final.shape[0] == 5:
+        q_final[1] = final_platform_height_m
+        q_final[2] = 0.0
+        q_final[3] = 0.0
+        q_final[4] = 0.0
+    else:
+        q_final[0] = 0.0
+        q_final[1] = 0.0
+        q_final[2] = 0.0
     return q_final
 
 
@@ -67,6 +72,27 @@ def _inverse_dynamics_trajectory(model: Any, q: np.ndarray, qdot: np.ndarray, qd
     return tau
 
 
+def _static_equilibrium_torque(model: Any, q: np.ndarray) -> np.ndarray:
+    """Return the generalized torque required to hold one posture statically."""
+
+    inverse_dynamics = model.inverse_dynamics()
+    parameters = np.zeros((0, 1))
+    external_forces = np.zeros((0, 1))
+    zero_qdot = np.zeros_like(q)
+    zero_qddot = np.zeros_like(q)
+    return np.asarray(
+        inverse_dynamics(q, zero_qdot, zero_qddot, external_forces, parameters),
+        dtype=float,
+    ).reshape((-1,))
+
+
+def static_equilibrium_torque(model: Any, q: np.ndarray) -> np.ndarray:
+    """Return the generalized torque required to hold one posture statically."""
+
+    q_column = np.asarray(q, dtype=float).reshape((-1, 1))
+    return _static_equilibrium_torque(model, q_column)
+
+
 def build_linear_inverse_dynamics_initial_guess(
     model: Any,
     initial_q: tuple[float, ...] | list[float] | np.ndarray,
@@ -95,9 +121,15 @@ def build_linear_inverse_dynamics_initial_guess(
     qdot = _finite_difference(q, state_time)
     qddot = _finite_difference(qdot, state_time)
 
-    platform_position = np.linspace(0.0, final_platform_height_m, n_shooting + 1, dtype=float).reshape((1, -1))
-    platform_velocity = _finite_difference(platform_position, state_time)
+    if q_start.shape[0] == 5:
+        platform_position = np.linspace(0.0, final_platform_height_m, n_shooting + 1, dtype=float).reshape((1, -1))
+        platform_velocity = _finite_difference(platform_position, state_time)
+    else:
+        platform_position = np.zeros((0, n_shooting + 1), dtype=float)
+        platform_velocity = np.zeros((0, n_shooting + 1), dtype=float)
     tau = _inverse_dynamics_trajectory(model, q, qdot, qddot)
+    if tau.shape[1] > 0:
+        tau[:, 0] = _static_equilibrium_torque(model, q[:, 0].reshape((-1, 1)))
 
     return OcpInitialGuess(
         q=q,

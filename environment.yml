@@ -8,6 +8,7 @@ dependencies:
   - bioptim=3.4.0
   - numpy>=1.25
   - matplotlib>=3.8
+  - pillow>=10.0
   - casadi>=3.6
   - pytest>=8.0
   - black>=24.0

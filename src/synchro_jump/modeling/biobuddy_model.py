@@ -97,18 +97,20 @@ class PlanarJumperModelDefinition:
 
     morphology: AthleteMorphology = AthleteMorphology()
     gravity: float = 9.81
+    floating_base: bool = True
+    include_platform_contact: bool = True
 
     @property
     def q_size(self) -> int:
         """Return the number of generalized coordinates."""
 
-        return 5
+        return 5 if self.floating_base else 3
 
     @property
     def tau_size(self) -> int:
         """Return the number of actuated generalized torques."""
 
-        return 2
+        return 2 if self.floating_base else 3
 
     @property
     def segment_masses(self) -> tuple[float, float, float]:
@@ -122,7 +124,26 @@ class PlanarJumperModelDefinition:
         """Return the crouched posture before CoM alignment over the ankle."""
 
         flexion = math.radians(self.morphology.initial_joint_flexion_deg)
-        return (0.0, 0.0, 0.0, -flexion, flexion)
+        if self.floating_base:
+            return (0.0, 0.0, 0.0, -flexion, flexion)
+        return (0.0, -flexion, flexion)
+
+    def _unpack_q_values(
+        self,
+        q_values: tuple[float, ...] | list[float],
+    ) -> tuple[float, float, float, float, float]:
+        """Expand one generalized configuration to the floating-base convention."""
+
+        if self.floating_base:
+            if len(q_values) != 5:
+                raise ValueError("The floating-base jumper expects 5 generalized coordinates")
+            q_root_x, q_root_z, q_root_rot, q_knee, q_hip = q_values
+            return q_root_x, q_root_z, q_root_rot, q_knee, q_hip
+
+        if len(q_values) != 3:
+            raise ValueError("The no-platform jumper expects 3 generalized coordinates")
+        q_root_rot, q_knee, q_hip = q_values
+        return 0.0, 0.0, q_root_rot, q_knee, q_hip
 
     def center_of_mass_position(self, q_values: tuple[float, float, float, float, float]) -> tuple[float, float]:
         """Return the planar CoM position for one generalized configuration."""
@@ -131,7 +152,7 @@ class PlanarJumperModelDefinition:
         leg_mass, thigh_mass, trunk_mass = self.segment_masses
         total_mass = leg_mass + thigh_mass + trunk_mass
 
-        q_root_x, q_root_z, q_root_rot, q_knee, q_hip = q_values
+        q_root_x, q_root_z, q_root_rot, q_knee, q_hip = self._unpack_q_values(q_values)
         leg_angle = math.pi / 2.0 + q_root_rot
         thigh_angle = leg_angle + q_knee
         trunk_angle = thigh_angle + q_hip
@@ -167,7 +188,7 @@ class PlanarJumperModelDefinition:
 
     def center_of_mass_horizontal_jacobian(
         self,
-        q_values: tuple[float, float, float, float, float],
+        q_values: tuple[float, ...],
     ) -> tuple[float, float, float]:
         """Return the CoM horizontal Jacobian w.r.t. the three rotational DoFs."""
 
@@ -175,7 +196,7 @@ class PlanarJumperModelDefinition:
         leg_mass, thigh_mass, trunk_mass = self.segment_masses
         total_mass = leg_mass + thigh_mass + trunk_mass
 
-        _, _, q_root_rot, q_knee, q_hip = q_values
+        _, _, q_root_rot, q_knee, q_hip = self._unpack_q_values(q_values)
         leg_angle = math.pi / 2.0 + q_root_rot
         thigh_angle = leg_angle + q_knee
         trunk_angle = thigh_angle + q_hip
@@ -201,7 +222,7 @@ class PlanarJumperModelDefinition:
         *,
         tolerance: float = 1e-10,
         max_iterations: int = 25,
-    ) -> tuple[float, float, float, float, float]:
+    ) -> tuple[float, ...]:
         """Return one crouched posture with the CoM aligned over the ankle.
 
         The reduced model has no explicit ankle joint. We therefore use the root
@@ -213,7 +234,7 @@ class PlanarJumperModelDefinition:
         q_values = list(self.crouched_joint_configuration_rad)
         for _ in range(max_iterations):
             center_of_mass_x, _ = self.center_of_mass_position(tuple(q_values))
-            ankle_x = q_values[0]
+            ankle_x = q_values[0] if self.floating_base else 0.0
             horizontal_error = center_of_mass_x - ankle_x
             if abs(horizontal_error) <= tolerance:
                 break
@@ -224,12 +245,13 @@ class PlanarJumperModelDefinition:
                 break
 
             pseudo_inverse = jacobian_root / jacobian_norm_sq
-            q_values[2] -= pseudo_inverse * horizontal_error
+            root_rotation_index = 2 if self.floating_base else 0
+            q_values[root_rotation_index] -= pseudo_inverse * horizontal_error
 
         return tuple(q_values)
 
     @property
-    def initial_joint_configuration_rad(self) -> tuple[float, float, float, float, float]:
+    def initial_joint_configuration_rad(self) -> tuple[float, ...]:
         """Return one nominal crouched initial posture."""
 
         return self.aligned_initial_joint_configuration_rad()
@@ -251,12 +273,16 @@ class PlanarJumperModelDefinition:
                     "leg_foot",
                     "base",
                     (0.0, 0.0, 0.0),
-                    translations="xz",
+                    translations="xz" if self.floating_base else None,
                     rotations="y",
                     ranges_q=(
-                        (-1.5, 1.5),
-                        (-0.2, 2.2),
-                        (-3.141593, 3.141593),
+                        (
+                            (-1.5, 1.5),
+                            (-0.2, 2.2),
+                            (-3.141593, 3.141593),
+                        )
+                        if self.floating_base
+                        else ((-3.141593, 3.141593),)
                     ),
                     mass=leg_mass,
                     center_of_mass=(0.0, 0.0, 0.55 * lengths.leg_foot),
@@ -286,7 +312,11 @@ class PlanarJumperModelDefinition:
                 _marker_block("knee", "leg_foot", (0.0, 0.0, lengths.leg_foot)),
                 _marker_block("hip", "thigh", (0.0, 0.0, lengths.thigh)),
                 _marker_block("head", "trunk", (0.0, 0.0, lengths.trunk)),
-                _contact_block("platform_contact", "leg_foot", (0.0, 0.0, 0.0), axis="z"),
+                (
+                    _contact_block("platform_contact", "leg_foot", (0.0, 0.0, 0.0), axis="z")
+                    if self.include_platform_contact
+                    else ""
+                ),
             ]
         )
 
@@ -342,9 +372,13 @@ class PlanarJumperModelDefinition:
             name="leg_foot",
             parent_name="base",
             segment_coordinate_system=scs((0.0, 0.0, 0.0)),
-            translations=Translations.XZ,
+            translations=Translations.XZ if self.floating_base else None,
             rotations=Rotations.Y,
-            q_ranges=q_ranges((-1.5, 1.5), (-0.2, 2.2), (-math.pi, math.pi)),
+            q_ranges=(
+                q_ranges((-1.5, 1.5), (-0.2, 2.2), (-math.pi, math.pi))
+                if self.floating_base
+                else q_ranges((-math.pi, math.pi))
+            ),
             inertia_parameters=InertiaParametersReal(
                 mass=leg_mass,
                 center_of_mass=np.array([0.0, 0.0, 0.55 * lengths.leg_foot]),
@@ -353,7 +387,8 @@ class PlanarJumperModelDefinition:
         )
         leg_segment.add_marker(MarkerReal("foot_contact", position=np.array([0.0, 0.0, 0.0])))
         leg_segment.add_marker(MarkerReal("knee", position=np.array([0.0, 0.0, lengths.leg_foot])))
-        leg_segment.add_contact(ContactReal("platform_contact", position=np.array([0.0, 0.0, 0.0]), axis=Translations.Z))
+        if self.include_platform_contact:
+            leg_segment.add_contact(ContactReal("platform_contact", position=np.array([0.0, 0.0, 0.0]), axis=Translations.Z))
         model.add_segment(leg_segment)
 
         thigh_segment = SegmentReal(

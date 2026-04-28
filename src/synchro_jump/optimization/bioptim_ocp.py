@@ -6,12 +6,18 @@ from dataclasses import dataclass
 import inspect
 from pathlib import Path
 
+import numpy as np
+
 from synchro_jump.modeling import AthleteMorphology, PlanarJumperModelDefinition
 from synchro_jump.optimization.contact import PlatformInteractionModel
 from synchro_jump.optimization.force_profile import PlatformForceProfile
-from synchro_jump.optimization.initial_guess import build_linear_inverse_dynamics_initial_guess
+from synchro_jump.optimization.initial_guess import (
+    build_linear_inverse_dynamics_initial_guess,
+    static_equilibrium_torque,
+)
 from synchro_jump.optimization.problem import (
     CONTACT_MODEL_COMPLIANT_UNILATERAL,
+    CONTACT_MODEL_NO_PLATFORM,
     CONTACT_MODEL_RIGID_UNILATERAL,
     VerticalJumpOcpSettings,
     snap_to_discrete_value,
@@ -35,6 +41,8 @@ class VerticalJumpOcpBlueprint:
         """Return one surrogate contact-force target used by the GUI."""
 
         duration = final_time_guess or self.settings.final_time_upper_bound_s
+        if self.settings.contact_model == CONTACT_MODEL_NO_PLATFORM:
+            return tuple(0.0 for _ in range(self.settings.n_shooting))
         profile = PlatformForceProfile(
             peak_force_newtons=self.peak_force_newtons,
             total_duration=duration,
@@ -45,12 +53,7 @@ class VerticalJumpOcpBlueprint:
             contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
             contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
         )
-        initial_q = PlanarJumperModelDefinition(
-            morphology=AthleteMorphology(
-                height_m=self.settings.athlete_height_m,
-                mass_kg=self.settings.athlete_mass_kg,
-            )
-        ).initial_joint_configuration_rad
+        initial_q = _model_definition_from_settings(self.settings).initial_joint_configuration_rad
         targets = []
         for node_index in range(self.settings.n_shooting):
             time = duration * node_index / max(self.settings.n_shooting - 1, 1)
@@ -63,6 +66,43 @@ class VerticalJumpOcpBlueprint:
             )
             targets.append(max(surrogate_contact, 0.0))
         return tuple(targets)
+
+
+def _uses_platform_states(contact_model: str) -> bool:
+    """Return whether the selected mode requires explicit platform states."""
+
+    return contact_model in (CONTACT_MODEL_RIGID_UNILATERAL, CONTACT_MODEL_COMPLIANT_UNILATERAL)
+
+
+def _floating_base_for_contact_model(contact_model: str) -> bool:
+    """Return whether the selected mode uses the floating-base jumper model."""
+
+    return contact_model != CONTACT_MODEL_NO_PLATFORM
+
+
+def _model_definition_from_settings(settings: VerticalJumpOcpSettings) -> PlanarJumperModelDefinition:
+    """Return the jumper model definition matching the selected contact mode."""
+
+    return PlanarJumperModelDefinition(
+        morphology=AthleteMorphology(
+            height_m=settings.athlete_height_m,
+            mass_kg=settings.athlete_mass_kg,
+        ),
+        floating_base=_floating_base_for_contact_model(settings.contact_model),
+        include_platform_contact=settings.contact_model != CONTACT_MODEL_NO_PLATFORM,
+    )
+
+
+def _knee_control_index(settings: VerticalJumpOcpSettings) -> int:
+    """Return the index of the knee torque within `tau_joints`."""
+
+    return 1 if settings.contact_model == CONTACT_MODEL_NO_PLATFORM else 0
+
+
+def _hip_control_index(settings: VerticalJumpOcpSettings) -> int:
+    """Return the index of the hip torque within `tau_joints`."""
+
+    return 2 if settings.contact_model == CONTACT_MODEL_NO_PLATFORM else 1
 
 
 def _import_bioptim_build_api():
@@ -81,6 +121,7 @@ def _import_bioptim_build_api():
         "Node",
         "ObjectiveFcn",
         "ObjectiveList",
+        "ObjectiveWeight",
         "OdeSolver",
         "OptimalControlProgram",
         "PhaseDynamics",
@@ -139,6 +180,78 @@ def _constant_bounds_with_fixed_start(lower_bounds, upper_bounds, start_values):
     upper = np.asarray(upper_bounds, dtype=float).reshape((-1, 1))
     start = np.asarray(start_values, dtype=float).reshape((-1, 1))
     return np.hstack((start, lower, lower)), np.hstack((start, upper, upper))
+
+
+def _shooting_weight_with_excluded_tail(
+    n_shooting: int,
+    excluded_tail_nodes: int,
+):
+    """Return one per-shooting-node weight vector with a zeroed tail."""
+
+    if n_shooting <= 0:
+        raise ValueError("n_shooting must be strictly positive")
+    if excluded_tail_nodes < 0:
+        raise ValueError("excluded_tail_nodes must stay non-negative")
+    if excluded_tail_nodes >= n_shooting:
+        raise ValueError("excluded_tail_nodes must stay below n_shooting")
+
+    weights = np.ones((n_shooting,), dtype=float)
+    if excluded_tail_nodes:
+        weights[-excluded_tail_nodes:] = 0.0
+    return weights
+
+
+def _static_control_target_for_first_interval(
+    model,
+    initial_q,
+    settings: VerticalJumpOcpSettings,
+) -> np.ndarray:
+    """Return the first control target enforcing static equilibrium at the initial posture."""
+
+    full_static_torque = static_equilibrium_torque(model, np.asarray(initial_q, dtype=float))
+    target = np.asarray(full_static_torque[model.nb_root :], dtype=float).reshape((-1, 1))
+    if settings.contact_model == CONTACT_MODEL_NO_PLATFORM and target.shape[0] > 0:
+        target[0, 0] = 0.0
+    return target
+
+
+def _align_configuration_to_zero_com_x(
+    model,
+    initial_q,
+    *,
+    tolerance: float = 1e-10,
+    max_iterations: int = 25,
+) -> np.ndarray:
+    """Align one configuration so that the model CoM horizontal position reaches zero."""
+
+    from casadi import DM, Function, SX, jacobian
+
+    q_values = np.asarray(initial_q, dtype=float).reshape((-1, 1)).copy()
+    q_symbol = SX.sym("q_align", model.nb_q, 1)
+    parameters = SX.zeros(0, 1)
+    com_x_expression = model.center_of_mass()(q_symbol, parameters)[0]
+    com_x_jacobian_expression = jacobian(com_x_expression, q_symbol)
+    com_x_and_jacobian = Function(
+        "com_x_and_jacobian",
+        [q_symbol],
+        [com_x_expression, com_x_jacobian_expression],
+    )
+
+    for _ in range(max_iterations):
+        com_x_value, jacobian_value = com_x_and_jacobian(DM(q_values))
+        horizontal_error = float(np.asarray(com_x_value, dtype=float).reshape((-1,))[0])
+        if abs(horizontal_error) <= tolerance:
+            break
+
+        jacobian_row = np.asarray(jacobian_value, dtype=float).reshape((1, -1))
+        jacobian_norm_sq = float((jacobian_row @ jacobian_row.T).reshape((-1,))[0])
+        if jacobian_norm_sq <= 1e-12:
+            break
+
+        pseudo_inverse = jacobian_row.T / jacobian_norm_sq
+        q_values -= pseudo_inverse * horizontal_error
+
+    return q_values.reshape((-1,))
 
 
 def _contact_index_from_name(model, contact_name: str) -> int:
@@ -288,6 +401,14 @@ def _symbolic_compliant_contact_force(
     )
 
 
+def _add_platform_force_to_generalized_force(generalized_force, platform_force_newtons):
+    """Inject the platform actuation into the vertical root translation DoF."""
+
+    if generalized_force.shape[0] > 1:
+        generalized_force[1] = generalized_force[1] + platform_force_newtons
+    return generalized_force
+
+
 def _coupled_platform_dynamics_symbolic(
     model,
     q,
@@ -307,6 +428,7 @@ def _coupled_platform_dynamics_symbolic(
 
     nq = q.shape[0]
     tau = vertcat(cx_type.zeros(model.nb_root, 1), tau_joints)
+    tau = _add_platform_force_to_generalized_force(tau, platform_force_newtons)
     zero_qddot = cx_type.zeros(nq, 1)
     qddot_symbol = cx_type.sym("qddot_contact", nq, 1)
     contact_axis = _model_contact_axis(model, contact_index)
@@ -347,6 +469,62 @@ def _predicted_apex_height(controller, gravity: float = 9.81):
 _predicted_apex_height.__name__ = "predicted_apex_height"
 
 
+def _final_com_anteroposterior_velocity_squared(controller):
+    """Return the squared anteroposterior CoM velocity at the final node."""
+
+    q, qdot, _ = _controller_q_qdot_tau(controller)
+    com_velocity = controller.model.center_of_mass_velocity()(q, qdot, controller.parameters.cx)
+    return com_velocity[0] ** 2
+
+
+_final_com_anteroposterior_velocity_squared.__name__ = "final_com_anteroposterior_velocity_squared"
+
+
+def _final_extension_error_squared(controller):
+    """Return the squared distance to the fully extended rotational posture."""
+
+    from casadi import sumsqr
+
+    q, _, _ = _controller_q_qdot_tau(controller)
+    rotational_q = q[2:] if q.shape[0] > 3 else q
+    return sumsqr(rotational_q)
+
+
+_final_extension_error_squared.__name__ = "final_extension_error_squared"
+
+
+def _sagittal_angular_momentum(controller):
+    """Return the sagittal-plane angular momentum component."""
+
+    q, qdot, _ = _controller_q_qdot_tau(controller)
+    return controller.model.angular_momentum()(q, qdot, controller.parameters.cx)[1]
+
+
+_sagittal_angular_momentum.__name__ = "sagittal_angular_momentum"
+
+
+def _no_platform_external_vertical_force(
+    controller,
+    *,
+    athlete_mass_kg: float,
+    gravity: float,
+):
+    """Return the equivalent external vertical force in the no-platform mode."""
+
+    from casadi import solve
+
+    q, qdot, tau = _controller_q_qdot_tau(controller)
+    qddot = solve(
+        controller.model.mass_matrix()(q, controller.parameters.cx),
+        tau - controller.model.non_linear_effects()(q, qdot, controller.parameters.cx),
+    )
+    com_acceleration = controller.model.center_of_mass_acceleration()(q, qdot, qddot, controller.parameters.cx)
+    return athlete_mass_kg * (com_acceleration[2] + gravity)
+
+
+_no_platform_external_vertical_force.__name__ = "no_platform_external_vertical_force"
+
+
 def _contact_force_penalty(
     controller,
     contact_model: str,
@@ -355,6 +533,7 @@ def _contact_force_penalty(
     total_duration_s: float,
     taper_duration_s: float,
     platform_mass_kg: float,
+    athlete_mass_kg: float,
     gravity: float,
     contact_stiffness_n_per_m: float,
     contact_damping_n_s_per_m: float,
@@ -390,6 +569,13 @@ def _contact_force_penalty(
             platform_velocity=controller.states["platform_velocity"].cx,
             contact_stiffness_n_per_m=contact_stiffness_n_per_m,
             contact_damping_n_s_per_m=contact_damping_n_s_per_m,
+        )
+
+    if contact_model == CONTACT_MODEL_NO_PLATFORM:
+        return _no_platform_external_vertical_force(
+            controller,
+            athlete_mass_kg=athlete_mass_kg,
+            gravity=gravity,
         )
 
     raise ValueError(f"Unsupported contact model: {contact_model}")
@@ -435,6 +621,8 @@ def _contact_model_dynamics_name(contact_model: str) -> str:
         return "TORQUE_DRIVEN_WITH_EXPLICIT_PLATFORM_RIGID_CONTACT"
     if contact_model == CONTACT_MODEL_COMPLIANT_UNILATERAL:
         return "TORQUE_DRIVEN_WITH_EXPLICIT_PLATFORM_COMPLIANT_CONTACT"
+    if contact_model == CONTACT_MODEL_NO_PLATFORM:
+        return "TORQUE_DRIVEN_NO_PLATFORM"
     raise ValueError(f"Unsupported contact model: {contact_model}")
 
 
@@ -445,6 +633,8 @@ def _contact_model_label(contact_model: str) -> str:
         return "RIGID_UNILATERAL"
     if contact_model == CONTACT_MODEL_COMPLIANT_UNILATERAL:
         return "COMPLIANT_UNILATERAL"
+    if contact_model == CONTACT_MODEL_NO_PLATFORM:
+        return "NO_PLATFORM"
     raise ValueError(f"Unsupported contact model: {contact_model}")
 
 
@@ -559,6 +749,41 @@ def _configure_explicit_platform_controls(ConfigureVariables, ocp, nlp) -> None:
     )
 
 
+def _configure_no_platform_dynamics(
+    ocp,
+    nlp,
+    **_,
+):
+    """Configure the reduced torque-driven dynamics without explicit platform states."""
+
+    from bioptim import ConfigureProblem
+
+    name_dof = list(_model_dof_names(nlp.model))
+    ConfigureProblem.configure_new_variable("q_joints", name_dof, ocp, nlp, as_states=True, as_controls=False)
+    ConfigureProblem.configure_new_variable("qdot_joints", name_dof, ocp, nlp, as_states=True, as_controls=False)
+    ConfigureProblem.configure_new_variable("tau_joints", name_dof, ocp, nlp, as_states=False, as_controls=True)
+    ConfigureProblem.configure_dynamics_function(
+        ocp,
+        nlp,
+        _no_platform_dynamics,
+    )
+
+
+def _configure_no_platform_states(ConfigureVariables, ocp, nlp) -> None:
+    """Configure the reduced no-platform state variables for `bioptim>=3.4`."""
+
+    name_dof = list(_model_dof_names(nlp.model))
+    ConfigureVariables.configure_new_variable("q_joints", name_dof, ocp, nlp, as_states=True, as_controls=False)
+    ConfigureVariables.configure_new_variable("qdot_joints", name_dof, ocp, nlp, as_states=True, as_controls=False)
+
+
+def _configure_no_platform_controls(ConfigureVariables, ocp, nlp) -> None:
+    """Configure the reduced no-platform controls for `bioptim>=3.4`."""
+
+    name_dof = list(_model_dof_names(nlp.model))
+    ConfigureVariables.configure_new_variable("tau_joints", name_dof, ocp, nlp, as_states=False, as_controls=True)
+
+
 def _make_explicit_platform_model_class(BiorbdModel, StateDynamics, ConfigureVariables):
     """Return one `bioptim>=3.4` custom model exposing the explicit platform dynamics."""
 
@@ -604,6 +829,53 @@ def _make_explicit_platform_model_class(BiorbdModel, StateDynamics, ConfigureVar
             )
 
     return ExplicitPlatformBiorbdModel
+
+
+def _make_no_platform_model_class(BiorbdModel, StateDynamics, ConfigureVariables):
+    """Return one `bioptim>=3.4` custom model exposing the reduced no-platform dynamics."""
+
+    class NoPlatformBiorbdModel(BiorbdModel, StateDynamics):
+        """Custom `BiorbdModel` carrying the simplified torque-driven dynamics."""
+
+        @property
+        def state_configuration_functions(self):
+            return [lambda ocp, nlp: _configure_no_platform_states(ConfigureVariables, ocp, nlp)]
+
+        @property
+        def control_configuration_functions(self):
+            return [lambda ocp, nlp: _configure_no_platform_controls(ConfigureVariables, ocp, nlp)]
+
+        @property
+        def algebraic_configuration_functions(self):
+            return []
+
+        @property
+        def extra_configuration_functions(self):
+            return []
+
+        @staticmethod
+        def dynamics(
+            time,
+            states,
+            controls,
+            parameters,
+            algebraic_states,
+            numerical_timeseries,
+            nlp,
+            **extra_parameters,
+        ):
+            return _no_platform_dynamics(
+                time,
+                states,
+                controls,
+                parameters,
+                algebraic_states,
+                numerical_timeseries,
+                nlp,
+                **extra_parameters,
+            )
+
+    return NoPlatformBiorbdModel
 
 
 def _instantiate_ocp(OptimalControlProgram, api_kind: str, bio_model, dynamics, n_shooting: int, phase_time: float, **kwargs):
@@ -681,6 +953,7 @@ def _explicit_platform_dynamics(
             contact_damping_n_s_per_m=contact_damping_n_s_per_m,
         )
         tau = vertcat(nlp.cx.zeros(nlp.model.nb_root, 1), tau_joints)
+        tau = _add_platform_force_to_generalized_force(tau, platform_force_newtons)
         contact_generalized_force = nlp.cx.zeros(nlp.model.nb_q, 1)
         contact_generalized_force[1] = contact_force
         qddot = solve(
@@ -700,6 +973,36 @@ def _explicit_platform_dynamics(
         platform_acceleration,
     )
     return DynamicsEvaluation(dxdt=dxdt, defects=None)
+
+
+def _no_platform_dynamics(
+    time,
+    states,
+    controls,
+    parameters,
+    algebraic_states,
+    numerical_timeseries,
+    nlp,
+    **_,
+):
+    """Simplified torque-driven dynamics without explicit platform states."""
+
+    from bioptim import DynamicsEvaluation, DynamicsFunctions
+    from casadi import solve, vertcat
+
+    _ = time
+    _ = algebraic_states
+    _ = numerical_timeseries
+
+    q_joints = DynamicsFunctions.get(nlp.states["q_joints"], states)
+    qdot_joints = DynamicsFunctions.get(nlp.states["qdot_joints"], states)
+    tau_joints = DynamicsFunctions.get(nlp.controls["tau_joints"], controls)
+    dq = nlp.model.reshape_qdot()(q_joints, qdot_joints, parameters)
+    qddot = solve(
+        nlp.model.mass_matrix()(q_joints, parameters),
+        tau_joints - nlp.model.non_linear_effects()(q_joints, qdot_joints, parameters),
+    )
+    return DynamicsEvaluation(dxdt=vertcat(dq, qddot), defects=None)
 
 
 class VerticalJumpBioptimOcpBuilder:
@@ -724,14 +1027,36 @@ class VerticalJumpBioptimOcpBuilder:
     def export_model(self, output_dir: str | Path) -> Path:
         """Export the reduced jumper model to one `.bioMod` file."""
 
-        model_definition = PlanarJumperModelDefinition(
-            morphology=AthleteMorphology(
-                height_m=self.settings.athlete_height_m,
-                mass_kg=self.settings.athlete_mass_kg,
-            )
+        model_definition = _model_definition_from_settings(self.settings)
+        model_name = (
+            "vertical_jumper_3segments_no_platform.bioMod"
+            if self.settings.contact_model == CONTACT_MODEL_NO_PLATFORM
+            else "vertical_jumper_3segments.bioMod"
         )
-        output_path = Path(output_dir) / "vertical_jumper_3segments.bioMod"
+        output_path = Path(output_dir) / model_name
         return model_definition.write_biomod(output_path)
+
+    def aligned_initial_joint_configuration_rad(
+        self,
+        *,
+        model_path: str | Path | None = None,
+        tolerance: float = 1e-10,
+        max_iterations: int = 25,
+    ) -> tuple[float, ...]:
+        """Return one initial posture aligned on the true exported-model CoM."""
+
+        from bioptim import BiorbdModel
+
+        model_filepath = Path(model_path) if model_path is not None else self.export_model(Path.cwd() / "generated")
+        model_definition = _model_definition_from_settings(self.settings)
+        initial_q = model_definition.crouched_joint_configuration_rad
+        aligned_q = _align_configuration_to_zero_com_x(
+            BiorbdModel(str(model_filepath)),
+            initial_q,
+            tolerance=tolerance,
+            max_iterations=max_iterations,
+        )
+        return tuple(float(value) for value in aligned_q)
 
     def build_ocp(
         self,
@@ -753,24 +1078,46 @@ class VerticalJumpBioptimOcpBuilder:
         Node = bioptim_api["Node"]
         ObjectiveFcn = bioptim_api["ObjectiveFcn"]
         ObjectiveList = bioptim_api["ObjectiveList"]
+        ObjectiveWeight = bioptim_api["ObjectiveWeight"]
         OdeSolver = bioptim_api["OdeSolver"]
         OptimalControlProgram = bioptim_api["OptimalControlProgram"]
         PhaseDynamics = bioptim_api["PhaseDynamics"]
         api_kind = bioptim_api["api_kind"]
 
+        uses_platform_states = _uses_platform_states(self.settings.contact_model)
         blueprint = self.blueprint(peak_force_newtons)
         model_filepath = Path(model_path) if model_path is not None else self.export_model(Path.cwd() / "generated")
         if api_kind == "legacy":
             bio_model = BiorbdModel(str(model_filepath))
         else:
-            ExplicitPlatformBiorbdModel = _make_explicit_platform_model_class(
-                BiorbdModel,
-                bioptim_api["StateDynamics"],
-                bioptim_api["ConfigureVariables"],
-            )
-            bio_model = ExplicitPlatformBiorbdModel(str(model_filepath))
+            if uses_platform_states:
+                ExplicitPlatformBiorbdModel = _make_explicit_platform_model_class(
+                    BiorbdModel,
+                    bioptim_api["StateDynamics"],
+                    bioptim_api["ConfigureVariables"],
+                )
+                bio_model = ExplicitPlatformBiorbdModel(str(model_filepath))
+            else:
+                NoPlatformBiorbdModel = _make_no_platform_model_class(
+                    BiorbdModel,
+                    bioptim_api["StateDynamics"],
+                    bioptim_api["ConfigureVariables"],
+                )
+                bio_model = NoPlatformBiorbdModel(str(model_filepath))
 
         objective_functions = ObjectiveList()
+        torque_regularization_selector = _shooting_weight_with_excluded_tail(
+            self.settings.n_shooting,
+            self.settings.torque_regularization_excluded_tail_nodes,
+        )
+        torque_regularization_weight = ObjectiveWeight(
+            1e-5 * torque_regularization_selector,
+            interpolation=InterpolationType.EACH_FRAME,
+        )
+        torque_derivative_regularization_weight = ObjectiveWeight(
+            1e-6 * torque_regularization_selector,
+            interpolation=InterpolationType.EACH_FRAME,
+        )
         objective_functions.add(
             _predicted_apex_height,
             custom_type=ObjectiveFcn.Mayer,
@@ -778,25 +1125,93 @@ class VerticalJumpBioptimOcpBuilder:
             gravity=9.81,
         )
         objective_functions.add(
+            _final_com_anteroposterior_velocity_squared,
+            custom_type=ObjectiveFcn.Mayer,
+            node=Node.END,
+            weight=1e-2,
+        )
+        objective_functions.add(
+            _final_extension_error_squared,
+            custom_type=ObjectiveFcn.Mayer,
+            node=Node.END,
+            weight=5e-2,
+        )
+        objective_functions.add(
             ObjectiveFcn.Lagrange.MINIMIZE_CONTROL,
             key="tau_joints",
-            weight=1e-5,
+            weight=torque_regularization_weight,
+        )
+        objective_functions.add(
+            ObjectiveFcn.Lagrange.MINIMIZE_CONTROL,
+            key="tau_joints",
+            derivative=True,
+            weight=torque_derivative_regularization_weight,
+        )
+
+        initial_q = list(self.aligned_initial_joint_configuration_rad(model_path=model_filepath))
+        initial_qdot = [0.0] * bio_model.nb_qdot
+        initial_guess = build_linear_inverse_dynamics_initial_guess(
+            bio_model,
+            initial_q,
+            duration_s=final_time_guess,
+            n_shooting=self.settings.n_shooting,
+            final_platform_height_m=1.3,
+        )
+        first_interval_static_control_target = _static_control_target_for_first_interval(
+            bio_model,
+            initial_q,
+            self.settings,
         )
 
         constraints = ConstraintList()
-        for node in (Node.ALL_SHOOTING, Node.END):
-            bounds = (0.0, 5000.0) if node == Node.ALL_SHOOTING else (0.0, 0.0)
+        if uses_platform_states:
+            for node in (Node.ALL_SHOOTING, Node.END):
+                bounds = (0.0, 5000.0) if node == Node.ALL_SHOOTING else (0.0, 0.0)
+                constraints.add(
+                    _contact_force_penalty,
+                    node=node,
+                    min_bound=bounds[0],
+                    max_bound=bounds[1],
+                    contact_model=self.settings.contact_model,
+                    contact_name=blueprint.contact_name,
+                    peak_force_newtons=peak_force_newtons,
+                    total_duration_s=self.settings.final_time_upper_bound_s,
+                    taper_duration_s=0.3,
+                    platform_mass_kg=self.settings.platform_mass_kg,
+                    athlete_mass_kg=self.settings.athlete_mass_kg,
+                    gravity=9.81,
+                    contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
+                    contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
+                )
+        else:
             constraints.add(
                 _contact_force_penalty,
-                node=node,
-                min_bound=bounds[0],
-                max_bound=bounds[1],
+                node=Node.ALL_SHOOTING,
+                min_bound=1e-6,
+                max_bound=1e6,
                 contact_model=self.settings.contact_model,
                 contact_name=blueprint.contact_name,
                 peak_force_newtons=peak_force_newtons,
                 total_duration_s=self.settings.final_time_upper_bound_s,
                 taper_duration_s=0.3,
                 platform_mass_kg=self.settings.platform_mass_kg,
+                athlete_mass_kg=self.settings.athlete_mass_kg,
+                gravity=9.81,
+                contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
+                contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
+            )
+            constraints.add(
+                _contact_force_penalty,
+                node=Node.END,
+                min_bound=0.0,
+                max_bound=0.0,
+                contact_model=self.settings.contact_model,
+                contact_name=blueprint.contact_name,
+                peak_force_newtons=peak_force_newtons,
+                total_duration_s=self.settings.final_time_upper_bound_s,
+                taper_duration_s=0.3,
+                platform_mass_kg=self.settings.platform_mass_kg,
+                athlete_mass_kg=self.settings.athlete_mass_kg,
                 gravity=9.81,
                 contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
                 contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
@@ -804,14 +1219,29 @@ class VerticalJumpBioptimOcpBuilder:
         constraints.add(
             ConstraintFcn.TIME_CONSTRAINT,
             node=Node.END,
-            minimum=self.settings.final_time_lower_bound_s,
-            maximum=self.settings.final_time_upper_bound_s,
+            min_bound=self.settings.final_time_lower_bound_s,
+            max_bound=self.settings.final_time_upper_bound_s,
+            phase=0,
+        )
+        constraints.add(
+            _sagittal_angular_momentum,
+            node=Node.ALL_SHOOTING,
+            min_bound=-self.settings.angular_momentum_bound_n_s,
+            max_bound=self.settings.angular_momentum_bound_n_s,
+        )
+        constraints.add(
+            ConstraintFcn.TRACK_CONTROL,
+            key="tau_joints",
+            node=Node.START,
+            target=first_interval_static_control_target,
         )
 
         dynamics_kwargs = dict(
             phase_dynamics=PhaseDynamics.SHARED_DURING_THE_PHASE,
             expand_dynamics=self.settings.expand_dynamics,
             ode_solver=OdeSolver.RK4(n_integration_steps=self.settings.rk4_substeps),
+        )
+        explicit_platform_kwargs = dict(
             peak_force_newtons=peak_force_newtons,
             total_duration_s=self.settings.final_time_upper_bound_s,
             taper_duration_s=0.3,
@@ -824,14 +1254,25 @@ class VerticalJumpBioptimOcpBuilder:
         )
         if api_kind == "legacy":
             Dynamics = bioptim_api["Dynamics"]
-            dynamics = Dynamics(
-                _configure_explicit_platform_dynamics,
-                dynamic_function=_explicit_platform_dynamics,
-                **dynamics_kwargs,
-            )
+            if uses_platform_states:
+                dynamics = Dynamics(
+                    _configure_explicit_platform_dynamics,
+                    dynamic_function=_explicit_platform_dynamics,
+                    **dynamics_kwargs,
+                    **explicit_platform_kwargs,
+                )
+            else:
+                dynamics = Dynamics(
+                    _configure_no_platform_dynamics,
+                    dynamic_function=_no_platform_dynamics,
+                    **dynamics_kwargs,
+                )
         else:
             DynamicsOptions = bioptim_api["DynamicsOptions"]
-            dynamics = DynamicsOptions(**dynamics_kwargs)
+            dynamics = DynamicsOptions(
+                **dynamics_kwargs,
+                **(explicit_platform_kwargs if uses_platform_states else {}),
+            )
 
         q_bounds = bio_model.bounds_from_ranges("q")
         qdot_bounds = bio_model.bounds_from_ranges("qdot")
@@ -839,23 +1280,6 @@ class VerticalJumpBioptimOcpBuilder:
         q_max = q_bounds.max[:, 0]
         qdot_min = qdot_bounds.min[:, 0]
         qdot_max = qdot_bounds.max[:, 0]
-
-        initial_q = list(
-            PlanarJumperModelDefinition(
-                morphology=AthleteMorphology(
-                    height_m=self.settings.athlete_height_m,
-                    mass_kg=self.settings.athlete_mass_kg,
-                )
-            ).initial_joint_configuration_rad
-        )
-        initial_qdot = [0.0] * bio_model.nb_qdot
-        initial_guess = build_linear_inverse_dynamics_initial_guess(
-            bio_model,
-            initial_q,
-            duration_s=final_time_guess,
-            n_shooting=self.settings.n_shooting,
-            final_platform_height_m=1.3,
-        )
 
         x_bounds = BoundsList()
         q_roots_bounds = _constant_bounds_with_fixed_start(
@@ -878,8 +1302,9 @@ class VerticalJumpBioptimOcpBuilder:
             qdot_max[bio_model.nb_root :],
             initial_qdot[bio_model.nb_root :],
         )
-        platform_position_bounds = _constant_bounds_with_fixed_start([-0.2], [2.5], [0.0])
-        platform_velocity_bounds = _constant_bounds_with_fixed_start([-10.0], [10.0], [0.0])
+        if uses_platform_states:
+            platform_position_bounds = _constant_bounds_with_fixed_start([-0.2], [2.5], [0.0])
+            platform_velocity_bounds = _constant_bounds_with_fixed_start([-10.0], [10.0], [0.0])
 
         if bio_model.nb_root:
             x_bounds.add(
@@ -907,18 +1332,19 @@ class VerticalJumpBioptimOcpBuilder:
             max_bound=qdot_joints_bounds[1],
             interpolation=InterpolationType.CONSTANT_WITH_FIRST_AND_LAST_DIFFERENT,
         )
-        x_bounds.add(
-            "platform_position",
-            min_bound=platform_position_bounds[0],
-            max_bound=platform_position_bounds[1],
-            interpolation=InterpolationType.CONSTANT_WITH_FIRST_AND_LAST_DIFFERENT,
-        )
-        x_bounds.add(
-            "platform_velocity",
-            min_bound=platform_velocity_bounds[0],
-            max_bound=platform_velocity_bounds[1],
-            interpolation=InterpolationType.CONSTANT_WITH_FIRST_AND_LAST_DIFFERENT,
-        )
+        if uses_platform_states:
+            x_bounds.add(
+                "platform_position",
+                min_bound=platform_position_bounds[0],
+                max_bound=platform_position_bounds[1],
+                interpolation=InterpolationType.CONSTANT_WITH_FIRST_AND_LAST_DIFFERENT,
+            )
+            x_bounds.add(
+                "platform_velocity",
+                min_bound=platform_velocity_bounds[0],
+                max_bound=platform_velocity_bounds[1],
+                interpolation=InterpolationType.CONSTANT_WITH_FIRST_AND_LAST_DIFFERENT,
+            )
 
         x_init = InitialGuessList()
         if bio_model.nb_root:
@@ -943,25 +1369,44 @@ class VerticalJumpBioptimOcpBuilder:
             initial_guess.qdot[bio_model.nb_root :, :],
             interpolation=InterpolationType.EACH_FRAME,
         )
-        x_init.add(
-            "platform_position",
-            initial_guess.platform_position,
-            interpolation=InterpolationType.EACH_FRAME,
-        )
-        x_init.add(
-            "platform_velocity",
-            initial_guess.platform_velocity,
-            interpolation=InterpolationType.EACH_FRAME,
-        )
+        if uses_platform_states:
+            x_init.add(
+                "platform_position",
+                initial_guess.platform_position,
+                interpolation=InterpolationType.EACH_FRAME,
+            )
+            x_init.add(
+                "platform_velocity",
+                initial_guess.platform_velocity,
+                interpolation=InterpolationType.EACH_FRAME,
+            )
 
         n_joint_tau = bio_model.nb_q - bio_model.nb_root
         u_bounds = BoundsList()
-        u_bounds["tau_joints"] = [self.settings.tau_min_nm] * n_joint_tau, [self.settings.tau_max_nm] * n_joint_tau
+        tau_min_bounds = [self.settings.tau_min_nm] * n_joint_tau
+        tau_max_bounds = [self.settings.tau_max_nm] * n_joint_tau
+        athlete_mass_kg = float(self.settings.athlete_mass_kg)
+        knee_control_index = _knee_control_index(self.settings)
+        hip_control_index = _hip_control_index(self.settings)
+        if knee_control_index < len(tau_min_bounds):
+            tau_min_bounds[knee_control_index] = -15.0 * athlete_mass_kg
+            tau_max_bounds[knee_control_index] = 15.0 * athlete_mass_kg
+        if hip_control_index < len(tau_min_bounds):
+            tau_min_bounds[hip_control_index] = -20.0 * athlete_mass_kg
+            tau_max_bounds[hip_control_index] = 20.0 * athlete_mass_kg
+        if self.settings.contact_model == CONTACT_MODEL_NO_PLATFORM and tau_min_bounds:
+            # In the reduced no-platform mode, the distal root-like rotation is kept passive.
+            tau_min_bounds[0] = 0.0
+            tau_max_bounds[0] = 0.0
+        u_bounds["tau_joints"] = tau_min_bounds, tau_max_bounds
 
         u_init = InitialGuessList()
+        tau_initial_guess = np.asarray(initial_guess.tau[bio_model.nb_root :, :], dtype=float).copy()
+        if self.settings.contact_model == CONTACT_MODEL_NO_PLATFORM and tau_initial_guess.shape[0] > 0:
+            tau_initial_guess[0, :] = 0.0
         u_init.add(
             "tau_joints",
-            initial_guess.tau[bio_model.nb_root :, :],
+            tau_initial_guess,
             interpolation=InterpolationType.EACH_FRAME,
         )
 

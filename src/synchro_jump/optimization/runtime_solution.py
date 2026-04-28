@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+import shutil
 from typing import Any, Callable
 
 import numpy as np
@@ -21,6 +22,7 @@ from synchro_jump.optimization.explicit_platform import (
 )
 from synchro_jump.optimization.problem import (
     CONTACT_MODEL_COMPLIANT_UNILATERAL,
+    CONTACT_MODEL_NO_PLATFORM,
     CONTACT_MODEL_RIGID_UNILATERAL,
     VerticalJumpOcpSettings,
 )
@@ -57,16 +59,90 @@ class OcpSolveSummary:
     com_height_trajectory_m: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
     com_vertical_velocity_trajectory_m_s: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
     contact_force_trajectory_n: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
+    external_force_ap_trajectory_n: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
     platform_force_trajectory_n: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
     platform_acceleration_trajectory_m_s2: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
     from_cache: bool = False
 
 
-def _configure_ipopt_solver(solver: Any, *, maximum_iterations: int, print_level: int) -> None:
+def _add_platform_force_to_numeric_generalized_force(
+    generalized_force: np.ndarray,
+    platform_force_newtons: float,
+) -> np.ndarray:
+    """Inject the platform actuation into the vertical root translation DoF."""
+
+    updated_force = np.asarray(generalized_force, dtype=float).copy()
+    if updated_force.shape[0] > 1:
+        updated_force[1] += float(platform_force_newtons)
+    return updated_force
+
+
+def _default_hsl_library_candidates() -> tuple[Path, ...]:
+    """Return the known local HSL library candidates ordered by preference."""
+
+    home = Path.home()
+    env_root = home / "miniconda3" / "envs"
+    candidates = [
+        Path("generated/solver_libs/libhsl.dylib"),
+        home / "Documents" / "GIT" / "ThirdParty-HSL" / "lib" / "lib" / "libhsl.dylib",
+    ]
+    candidates.extend(sorted(env_root.glob("*/lib/libhsl.dylib")))
+    candidates.extend(sorted(env_root.glob("*/lib/libcoinhsl.dylib")))
+
+    unique_candidates: list[Path] = []
+    for candidate in candidates:
+        if candidate not in unique_candidates:
+            unique_candidates.append(candidate)
+    return tuple(unique_candidates)
+
+
+def ensure_local_hsl_library(
+    *,
+    local_dir: str | Path = "generated/solver_libs",
+    preferred_path: str | Path | None = None,
+    candidate_paths: tuple[Path, ...] | None = None,
+) -> Path | None:
+    """Ensure one local copy of `libhsl.dylib` is available for IPOPT/MA57."""
+
+    local_dir_path = Path(local_dir)
+    local_target = local_dir_path / "libhsl.dylib"
+    if local_target.exists():
+        return local_target
+
+    candidates = []
+    if preferred_path is not None:
+        candidates.append(Path(preferred_path))
+    if candidate_paths is not None:
+        candidates.extend(candidate_paths)
+    else:
+        candidates.extend(_default_hsl_library_candidates())
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        source_path = candidate.resolve()
+        local_dir_path.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, local_target)
+        return local_target
+
+    return None
+
+
+def _configure_ipopt_solver(
+    solver: Any,
+    *,
+    maximum_iterations: int,
+    print_level: int,
+    linear_solver: str,
+    hsl_library_path: str | Path | None = None,
+) -> None:
     """Configure IPOPT to print each iteration and detailed timing statistics."""
 
     solver.set_maximum_iterations(maximum_iterations)
     solver.set_print_level(print_level)
+    solver.set_linear_solver(linear_solver)
+    if hsl_library_path is not None:
+        solver.set_option_unsafe(str(Path(hsl_library_path)), "hsllib")
     solver.set_option_unsafe("yes", "print_timing_statistics")
     solver.set_option_unsafe(1, "print_frequency_iter")
     solver.set_option_unsafe(0, "print_frequency_time")
@@ -142,6 +218,83 @@ def evaluate_com_trajectory(
         vertical_velocities[node_index] = com_velocity[2]
 
     return heights, vertical_velocities
+
+
+def evaluate_external_force_ap_trajectory(
+    model_path: str | Path,
+    state_trajectories: dict[str, np.ndarray],
+    *,
+    time: np.ndarray,
+    athlete_mass_kg: float,
+) -> np.ndarray:
+    """Estimate the anteroposterior external force from CoM horizontal acceleration."""
+
+    from casadi import DM
+    from bioptim import BiorbdModel
+
+    if time.size == 0:
+        return np.array([], dtype=float)
+
+    model = BiorbdModel(str(Path(model_path)))
+    q_trajectory = _merge_split_states(state_trajectories, "q")
+    com_fun = model.center_of_mass()
+    com_x_trajectory = np.zeros(q_trajectory.shape[1], dtype=float)
+
+    for node_index in range(q_trajectory.shape[1]):
+        q_column = DM(q_trajectory[:, node_index].reshape((-1, 1)))
+        com = np.asarray(com_fun(q_column, DM()), dtype=float).reshape((-1,))
+        com_x_trajectory[node_index] = com[0]
+
+    if time.size < 2 or np.any(np.diff(time) <= 0.0):
+        return np.zeros_like(time, dtype=float)
+
+    com_x_velocity = np.gradient(com_x_trajectory, time)
+    com_x_acceleration = np.gradient(com_x_velocity, time)
+    return athlete_mass_kg * com_x_acceleration
+
+
+def evaluate_no_platform_equivalent_contact_force_trajectory(
+    model_path: str | Path,
+    state_trajectories: dict[str, np.ndarray],
+    control_trajectories: dict[str, np.ndarray],
+    *,
+    time: np.ndarray,
+    athlete_mass_kg: float,
+    gravity: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return one equivalent external vertical force from CoM acceleration in no-platform mode."""
+
+    from casadi import DM
+    from bioptim import BiorbdModel
+
+    model = BiorbdModel(str(Path(model_path)))
+    q_trajectory = _merge_split_states(state_trajectories, "q")
+    qdot_trajectory = _merge_split_states(state_trajectories, "qdot")
+    tau_trajectory = np.asarray(control_trajectories["tau_joints"], dtype=float)
+    mass_matrix_fun = model.mass_matrix()
+    nonlinear_effects_fun = model.non_linear_effects()
+    com_acceleration_fun = model.center_of_mass_acceleration()
+
+    equivalent_contact_force = np.zeros(time.shape[0], dtype=float)
+    com_acceleration_trajectory = np.zeros(time.shape[0], dtype=float)
+    platform_force_trajectory = np.zeros(time.shape[0], dtype=float)
+
+    for node_index in range(time.shape[0]):
+        q_column = DM(q_trajectory[:, node_index].reshape((-1, 1)))
+        qdot_column = DM(qdot_trajectory[:, node_index].reshape((-1, 1)))
+        tau_column = np.asarray(tau_trajectory[:, min(node_index, tau_trajectory.shape[1] - 1)], dtype=float).reshape((-1, 1))
+        qddot = np.linalg.solve(
+            np.asarray(mass_matrix_fun(q_column, DM()), dtype=float),
+            tau_column - np.asarray(nonlinear_effects_fun(q_column, qdot_column, DM()), dtype=float),
+        )
+        com_acceleration = np.asarray(
+            com_acceleration_fun(q_column, qdot_column, DM(qddot), DM()),
+            dtype=float,
+        ).reshape((-1,))
+        com_acceleration_trajectory[node_index] = com_acceleration[2]
+        equivalent_contact_force[node_index] = athlete_mass_kg * (com_acceleration[2] + gravity)
+
+    return platform_force_trajectory, equivalent_contact_force, com_acceleration_trajectory
 
 
 def _evaluate_compliant_contact_force_trajectory(
@@ -248,13 +401,14 @@ def _evaluate_rigid_contact_force_trajectory(
 
         tau_joints = np.asarray(control_trajectories["tau_joints"][:, min(node_index, tau_joints_trajectory.shape[1] - 1)])
         tau_joints = np.nan_to_num(tau_joints.astype(float), nan=0.0)
-        tau = np.concatenate((np.zeros(model.nb_root, dtype=float), tau_joints))
         platform_force = platform_actuation_force(
             float(current_time),
             peak_force_newtons=peak_force_newtons,
             total_duration_s=total_duration_s,
             taper_duration_s=taper_duration_s,
         )
+        tau = np.concatenate((np.zeros(model.nb_root, dtype=float), tau_joints))
+        tau = _add_platform_force_to_numeric_generalized_force(tau, platform_force)
         coupled_solution = solve_coupled_platform_dynamics_numeric(
             mass_matrix=np.asarray(mass_matrix_fun(q_column, DM()), dtype=float),
             nonlinear_effects=np.asarray(nonlinear_effects_fun(q_column, qdot_column, DM()), dtype=float),
@@ -280,6 +434,7 @@ def evaluate_contact_force_trajectory(
     time: np.ndarray,
     peak_force_newtons: float,
     platform_mass_kg: float,
+    athlete_mass_kg: float = 50.0,
     contact_model: str = CONTACT_MODEL_RIGID_UNILATERAL,
     contact_stiffness_n_per_m: float = 30000.0,
     contact_damping_n_s_per_m: float = 1500.0,
@@ -317,6 +472,16 @@ def evaluate_contact_force_trajectory(
             gravity=gravity,
         )
 
+    if contact_model == CONTACT_MODEL_NO_PLATFORM:
+        return evaluate_no_platform_equivalent_contact_force_trajectory(
+            model_path,
+            state_trajectories,
+            control_trajectories,
+            time=time,
+            athlete_mass_kg=athlete_mass_kg,
+            gravity=gravity,
+        )
+
     raise ValueError(f"Unsupported contact model: {contact_model}")
 
 
@@ -330,6 +495,7 @@ def summarize_solved_ocp(
     peak_force_newtons: float,
     platform_mass_kg: float,
     contact_model: str = CONTACT_MODEL_RIGID_UNILATERAL,
+    athlete_mass_kg: float = 50.0,
     contact_stiffness_n_per_m: float = 30000.0,
     contact_damping_n_s_per_m: float = 1500.0,
     total_duration_s: float = 2.0,
@@ -338,6 +504,7 @@ def summarize_solved_ocp(
     contact_name: str = "platform_contact",
     com_evaluator: Callable[[str | Path, dict[str, np.ndarray]], tuple[np.ndarray, np.ndarray]] = evaluate_com_trajectory,
     contact_force_evaluator: Callable[..., tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None,
+    external_force_ap_evaluator: Callable[..., np.ndarray] | None = None,
 ) -> OcpSolveSummary:
     """Convert one runtime solution object into one GUI-friendly summary."""
 
@@ -361,6 +528,7 @@ def summarize_solved_ocp(
             peak_force_newtons=peak_force_newtons,
             platform_mass_kg=platform_mass_kg,
             contact_model=contact_model,
+            athlete_mass_kg=athlete_mass_kg,
             contact_stiffness_n_per_m=contact_stiffness_n_per_m,
             contact_damping_n_s_per_m=contact_damping_n_s_per_m,
             total_duration_s=total_duration_s,
@@ -369,6 +537,18 @@ def summarize_solved_ocp(
             contact_name=contact_name,
         )
     )
+    if external_force_ap_evaluator is None:
+        external_force_ap_trajectory_n = np.zeros_like(contact_force_trajectory_n)
+    else:
+        external_force_ap_trajectory_n = np.asarray(
+            external_force_ap_evaluator(
+                model_path,
+                state_trajectories,
+                time=time,
+                athlete_mass_kg=athlete_mass_kg,
+            ),
+            dtype=float,
+        ).reshape((-1,))
 
     final_height = float(com_height_trajectory_m[-1]) if com_height_trajectory_m.size else None
     final_vertical_velocity = (
@@ -415,6 +595,7 @@ def summarize_solved_ocp(
         com_height_trajectory_m=com_height_trajectory_m,
         com_vertical_velocity_trajectory_m_s=com_vertical_velocity_trajectory_m_s,
         contact_force_trajectory_n=contact_force_trajectory_n,
+        external_force_ap_trajectory_n=external_force_ap_trajectory_n,
         platform_force_trajectory_n=platform_force_trajectory_n,
         platform_acceleration_trajectory_m_s2=platform_acceleration_trajectory_m_s2,
     )
@@ -459,7 +640,7 @@ def solve_ocp_runtime_summary(
         )
 
     try:
-        from bioptim import SolutionMerge, Solver
+        from bioptim import CostType, SolutionMerge, Solver
     except ModuleNotFoundError as exc:
         dependency_name = getattr(exc, "name", None) or str(exc)
         return OcpSolveSummary(
@@ -473,12 +654,30 @@ def solve_ocp_runtime_summary(
     try:
         ocp = builder.build_ocp(peak_force_newtons=peak_force_newtons, model_path=model_path)
         solver = Solver.IPOPT()
+        hsl_library_path = None
+        if settings.ipopt_linear_solver.lower() == "ma57":
+            hsl_library_path = ensure_local_hsl_library(preferred_path=settings.ipopt_hsl_library_path)
+            if hsl_library_path is None:
+                return OcpSolveSummary(
+                    success=False,
+                    message=(
+                        "Impossible de configurer IPOPT avec ma57: aucune librairie HSL "
+                        "(`libhsl.dylib`) n'a ete trouvee localement ou dans les environnements Conda."
+                    ),
+                    model_path=model_path,
+                    requested_iterations=maximum_iterations,
+                    contact_model=settings.contact_model,
+                )
         _configure_ipopt_solver(
             solver,
             maximum_iterations=maximum_iterations,
             print_level=print_level,
+            linear_solver=settings.ipopt_linear_solver,
+            hsl_library_path=hsl_library_path,
         )
         solution = ocp.solve(solver)
+        print("\n[SynchroJump] Detail des termes de la fonction objectif")
+        solution.print_cost(CostType.OBJECTIVES)
         summary = summarize_solved_ocp(
             solution,
             model_path=model_path,
@@ -488,9 +687,11 @@ def solve_ocp_runtime_summary(
             peak_force_newtons=peak_force_newtons,
             platform_mass_kg=settings.platform_mass_kg,
             contact_model=settings.contact_model,
+            athlete_mass_kg=settings.athlete_mass_kg,
             contact_stiffness_n_per_m=settings.contact_stiffness_n_per_m,
             contact_damping_n_s_per_m=settings.contact_damping_n_s_per_m,
             total_duration_s=settings.final_time_upper_bound_s,
+            external_force_ap_evaluator=evaluate_external_force_ap_trajectory,
         )
         save_cached_solution_summary(
             cache_dir,

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 CONTACT_MODEL_RIGID_UNILATERAL = "rigid_unilateral"
 CONTACT_MODEL_COMPLIANT_UNILATERAL = "compliant_unilateral"
+CONTACT_MODEL_NO_PLATFORM = "no_platform"
 
 
 def discrete_force_slider_values() -> tuple[int, ...]:
@@ -23,7 +25,11 @@ def discrete_mass_slider_values() -> tuple[int, ...]:
 def discrete_contact_models() -> tuple[str, ...]:
     """Return the supported athlete-platform contact models."""
 
-    return (CONTACT_MODEL_RIGID_UNILATERAL, CONTACT_MODEL_COMPLIANT_UNILATERAL)
+    return (
+        CONTACT_MODEL_RIGID_UNILATERAL,
+        CONTACT_MODEL_COMPLIANT_UNILATERAL,
+        CONTACT_MODEL_NO_PLATFORM,
+    )
 
 
 def snap_to_discrete_value(value: float, admissible_values: tuple[float, ...]) -> float:
@@ -48,8 +54,10 @@ class VerticalJumpOcpSettings:
     contact_model: str = CONTACT_MODEL_RIGID_UNILATERAL
     contact_stiffness_n_per_m: float = 30000.0
     contact_damping_n_s_per_m: float = 1500.0
-    tau_min_nm: float = -500.0
-    tau_max_nm: float = 500.0
+    tau_min_nm: float = -1000.0
+    tau_max_nm: float = 1000.0
+    angular_momentum_bound_n_s: float = 5.0
+    torque_regularization_excluded_tail_nodes: int = 3
     final_time_upper_bound_s: float = 2.0
     final_time_lower_bound_s: float = 0.2
     n_shooting: int = 100
@@ -57,6 +65,8 @@ class VerticalJumpOcpSettings:
     n_threads: int = 6
     use_sx: bool = True
     expand_dynamics: bool = True
+    ipopt_linear_solver: str = "ma57"
+    ipopt_hsl_library_path: str | None = None
     initial_joint_flexion_deg: float = 100.0
     force_slider_values_newtons: tuple[float, ...] = field(default_factory=discrete_force_slider_values)
     mass_slider_values_kg: tuple[float, ...] = field(default_factory=discrete_mass_slider_values)
@@ -78,6 +88,12 @@ class VerticalJumpOcpSettings:
             raise ValueError("contact_damping_n_s_per_m must stay non-negative")
         if self.tau_min_nm >= self.tau_max_nm:
             raise ValueError("tau_min_nm must stay below tau_max_nm")
+        if self.angular_momentum_bound_n_s <= 0.0:
+            raise ValueError("angular_momentum_bound_n_s must be strictly positive")
+        if self.torque_regularization_excluded_tail_nodes < 0:
+            raise ValueError("torque_regularization_excluded_tail_nodes must stay non-negative")
+        if self.torque_regularization_excluded_tail_nodes >= self.n_shooting:
+            raise ValueError("torque_regularization_excluded_tail_nodes must stay below n_shooting")
         if self.final_time_lower_bound_s <= 0.0:
             raise ValueError("final_time_lower_bound_s must be strictly positive")
         if self.final_time_lower_bound_s >= self.final_time_upper_bound_s:
@@ -92,5 +108,9 @@ class VerticalJumpOcpSettings:
             raise ValueError("use_sx must be a boolean")
         if not isinstance(self.expand_dynamics, bool):
             raise ValueError("expand_dynamics must be a boolean")
+        if not self.ipopt_linear_solver:
+            raise ValueError("ipopt_linear_solver cannot be empty")
+        if self.ipopt_hsl_library_path is not None and not isinstance(self.ipopt_hsl_library_path, (str, Path)):
+            raise ValueError("ipopt_hsl_library_path must be a path-like string when provided")
         if not self.force_slider_values_newtons:
             raise ValueError("force_slider_values_newtons cannot be empty")
