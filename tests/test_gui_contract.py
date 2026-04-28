@@ -268,3 +268,37 @@ def test_draw_raster_avatar_forwards_alpha_to_segment_renderer(monkeypatch) -> N
     assert ok is True
     assert recorded_alpha == [0.25, 0.25, 0.25]
     assert recorded_flip == [True, True, True]
+
+
+def test_segment_com_positions_delegate_to_the_display_model() -> None:
+    """The GUI helper should expose the segmental CoMs of the displayed model."""
+
+    app = object.__new__(SynchroJumpApp)
+    app.current_model_definition = lambda: type(
+        "_ModelDefinition",
+        (),
+        {
+            "segment_center_of_mass_positions": lambda self, _q: {
+                "leg_foot": (0.0, 0.3),
+                "thigh": (0.1, 0.8),
+                "trunk": (0.2, 1.2),
+            }
+        },
+    )()
+
+    segment_coms = app._segment_com_positions((0.0, 0.0, 0.0))
+
+    assert segment_coms["leg_foot"] == (0.0, 0.3)
+    assert segment_coms["thigh"] == (0.1, 0.8)
+    assert segment_coms["trunk"] == (0.2, 1.2)
+
+
+def test_joint_torque_limits_follow_the_current_mass() -> None:
+    """The displayed torque limits should match the OCP mass-dependent bounds."""
+
+    app = object.__new__(SynchroJumpApp)
+    app.current_mass_kg = lambda: 50.0
+
+    torque_limits = app._joint_torque_limits_nm()
+
+    assert torque_limits == {"Genou": 750.0, "Hanche": 1000.0}

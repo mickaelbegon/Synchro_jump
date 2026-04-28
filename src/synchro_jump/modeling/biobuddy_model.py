@@ -148,10 +148,27 @@ class PlanarJumperModelDefinition:
     def center_of_mass_position(self, q_values: tuple[float, float, float, float, float]) -> tuple[float, float]:
         """Return the planar CoM position for one generalized configuration."""
 
-        lengths = self.morphology.segment_lengths
         leg_mass, thigh_mass, trunk_mass = self.segment_masses
         total_mass = leg_mass + thigh_mass + trunk_mass
+        segment_centers = self.segment_center_of_mass_positions(q_values)
+        leg_com = segment_centers["leg_foot"]
+        thigh_com = segment_centers["thigh"]
+        trunk_com = segment_centers["trunk"]
+        center_of_mass_x = (
+            leg_mass * leg_com[0] + thigh_mass * thigh_com[0] + trunk_mass * trunk_com[0]
+        ) / total_mass
+        center_of_mass_z = (
+            leg_mass * leg_com[1] + thigh_mass * thigh_com[1] + trunk_mass * trunk_com[1]
+        ) / total_mass
+        return center_of_mass_x, center_of_mass_z
 
+    def segment_center_of_mass_positions(
+        self,
+        q_values: tuple[float, ...] | list[float],
+    ) -> dict[str, tuple[float, float]]:
+        """Return the planar center of mass of each reduced segment."""
+
+        lengths = self.morphology.segment_lengths
         q_root_x, q_root_z, q_root_rot, q_knee, q_hip = self._unpack_q_values(q_values)
         leg_angle = math.pi / 2.0 + q_root_rot
         thigh_angle = leg_angle + q_knee
@@ -177,14 +194,11 @@ class PlanarJumperModelDefinition:
             hip[0] + 0.5 * lengths.trunk * math.cos(trunk_angle),
             hip[1] + 0.5 * lengths.trunk * math.sin(trunk_angle),
         )
-
-        center_of_mass_x = (
-            leg_mass * leg_com[0] + thigh_mass * thigh_com[0] + trunk_mass * trunk_com[0]
-        ) / total_mass
-        center_of_mass_z = (
-            leg_mass * leg_com[1] + thigh_mass * thigh_com[1] + trunk_mass * trunk_com[1]
-        ) / total_mass
-        return center_of_mass_x, center_of_mass_z
+        return {
+            "leg_foot": leg_com,
+            "thigh": thigh_com,
+            "trunk": trunk_com,
+        }
 
     def center_of_mass_horizontal_jacobian(
         self,

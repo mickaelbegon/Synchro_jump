@@ -469,6 +469,15 @@ class SynchroJumpApp:
             "Hanche": tau_trajectory[-1, :],
         }
 
+    def _joint_torque_limits_nm(self) -> dict[str, float]:
+        """Return the displayed knee and hip torque limits in Nm."""
+
+        athlete_mass_kg = float(self.current_mass_kg())
+        return {
+            "Genou": 15.0 * athlete_mass_kg,
+            "Hanche": 20.0 * athlete_mass_kg,
+        }
+
     def _runtime_com_planar_trajectory(self, morphology: AthleteMorphology) -> np.ndarray | None:
         """Return the runtime CoM planar trajectory `(x, z)` from the displayed model."""
 
@@ -530,6 +539,14 @@ class SynchroJumpApp:
         self._cached_runtime_com_velocity_key = cache_key
         self._cached_runtime_com_velocity_trajectory = velocities
         return self._cached_runtime_com_velocity_trajectory
+
+    def _segment_com_positions(
+        self,
+        q_values: tuple[float, ...] | list[float],
+    ) -> dict[str, tuple[float, float]]:
+        """Return the displayed segmental CoM positions for one generalized state."""
+
+        return self.current_model_definition().segment_center_of_mass_positions(tuple(q_values))
 
     def refresh(self, *, dynamic_only: bool = False) -> None:
         """Refresh the figures and the textual summary."""
@@ -726,7 +743,11 @@ class SynchroJumpApp:
     def _draw_pose_figure(self, morphology: AthleteMorphology) -> None:
         """Draw the initial and optimized sagittal stick figures."""
 
+        model_definition = self.current_model_definition()
+        initial_q = self.current_initial_q()
         initial_points = self._pose_points_from_q(morphology, self.current_initial_q())
+        initial_com = model_definition.center_of_mass_position(initial_q)
+        initial_segment_coms = self._segment_com_positions(initial_q)
         avatar_available, _ = avatar_rendering_diagnostics()
 
         self.pose_axis.clear()
@@ -750,6 +771,15 @@ class SynchroJumpApp:
                 linestyle="--",
                 alpha=0.85,
             )
+        self._draw_center_of_mass_markers(
+            self.pose_axis,
+            initial_points["foot"][0],
+            initial_com,
+            initial_segment_coms,
+            alpha=0.32,
+            label_prefix="Initial",
+            show_labels=False,
+        )
 
         q_trajectory = self._runtime_q_trajectory()
         if q_trajectory is not None and q_trajectory.shape[0] >= 3:
@@ -797,6 +827,8 @@ class SynchroJumpApp:
             animation_index = self.current_animation_frame()
             animated_q = tuple(q_trajectory[:, animation_index].tolist())
             animated_points = self._pose_points_from_q(morphology, animated_q)
+            animated_com = model_definition.center_of_mass_position(animated_q)
+            animated_segment_coms = self._segment_com_positions(animated_q)
             if not self._draw_raster_avatar(self.pose_axis, animated_points, alpha=1.0):
                 self._draw_stick_figure(
                     self.pose_axis,
@@ -806,6 +838,15 @@ class SynchroJumpApp:
                     linestyle="-",
                     alpha=1.0,
                 )
+            self._draw_center_of_mass_markers(
+                self.pose_axis,
+                animated_points["foot"][0],
+                animated_com,
+                animated_segment_coms,
+                alpha=0.95,
+                label_prefix="Runtime",
+                show_labels=True,
+            )
             if com_trajectory is not None:
                 current_com = com_trajectory[:, animation_index]
                 self.pose_axis.scatter(
@@ -935,6 +976,73 @@ class SynchroJumpApp:
         )
         return ok
 
+    def _draw_center_of_mass_markers(
+        self,
+        axis,
+        support_x: float,
+        center_of_mass: tuple[float, float],
+        segment_centers: dict[str, tuple[float, float]],
+        *,
+        alpha: float,
+        label_prefix: str,
+        show_labels: bool,
+    ) -> None:
+        """Draw the global and segmental CoM markers on the sagittal pose figure."""
+
+        axis.axvline(
+            support_x,
+            color="#8d99ae",
+            linewidth=0.9,
+            linestyle=(0, (1, 2)),
+            alpha=max(0.2, 0.7 * alpha),
+            zorder=2.1,
+            label=f"{label_prefix} appui vertical" if show_labels else None,
+        )
+        segment_style = {
+            "leg_foot": ("CoM jambe/pied", "#f4a261", "s"),
+            "thigh": ("CoM cuisse", "#e76f51", "^"),
+            "trunk": ("CoM tronc", "#6d597a", "D"),
+        }
+        for name, (label, color, marker) in segment_style.items():
+            point = segment_centers[name]
+            axis.scatter(
+                [point[0]],
+                [point[1]],
+                color=color,
+                edgecolors="white",
+                linewidths=0.7,
+                s=34,
+                marker=marker,
+                alpha=alpha,
+                zorder=5.8,
+                label=label if show_labels else None,
+            )
+
+        axis.scatter(
+            [center_of_mass[0]],
+            [center_of_mass[1]],
+            color="#1d3557",
+            edgecolors="white",
+            linewidths=0.8,
+            s=54,
+            marker="o",
+            alpha=alpha,
+            zorder=6.1,
+            label="CoM global" if show_labels else None,
+        )
+        if show_labels:
+            horizontal_offset = center_of_mass[0] - support_x
+            axis.annotate(
+                f"CoM global\nΔx={horizontal_offset:+.3f} m",
+                xy=center_of_mass,
+                xytext=(center_of_mass[0] + 0.03, center_of_mass[1] + 0.05),
+                fontsize=8,
+                color="#1d3557",
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#cbd5e1", alpha=0.85),
+                arrowprops=dict(arrowstyle="->", color="#1d3557", lw=0.8, alpha=0.8),
+                zorder=6.2,
+            )
+
     def _draw_kinematics_figure(self) -> None:
         """Draw runtime kinematics when one solved trajectory is available."""
 
@@ -1031,6 +1139,7 @@ class SynchroJumpApp:
             self.joint_angle_axis.plot(time, angle_trajectories["Hanche"], color="#86bbd8", linewidth=2.0, label="Hanche (deg)")
         if torque_bundle is not None:
             control_time, torque_trajectories = torque_bundle
+            torque_limits = self._joint_torque_limits_nm()
             self.joint_torque_axis.step(
                 control_time,
                 torque_trajectories["Genou"],
@@ -1046,6 +1155,36 @@ class SynchroJumpApp:
                 linewidth=1.8,
                 where="post",
                 label="Tau hanche (Nm)",
+            )
+            self.joint_torque_axis.axhline(
+                torque_limits["Genou"],
+                color="#f26419",
+                linewidth=1.0,
+                linestyle=":",
+                alpha=0.8,
+                label=f"Limite genou ±{torque_limits['Genou']:.0f} Nm",
+            )
+            self.joint_torque_axis.axhline(
+                -torque_limits["Genou"],
+                color="#f26419",
+                linewidth=1.0,
+                linestyle=":",
+                alpha=0.8,
+            )
+            self.joint_torque_axis.axhline(
+                torque_limits["Hanche"],
+                color="#f6ae2d",
+                linewidth=1.0,
+                linestyle=":",
+                alpha=0.8,
+                label=f"Limite hanche ±{torque_limits['Hanche']:.0f} Nm",
+            )
+            self.joint_torque_axis.axhline(
+                -torque_limits["Hanche"],
+                color="#f6ae2d",
+                linewidth=1.0,
+                linestyle=":",
+                alpha=0.8,
             )
 
         self.joint_angle_axis.axvline(

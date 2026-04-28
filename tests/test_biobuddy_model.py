@@ -68,3 +68,18 @@ def test_no_platform_model_definition_exposes_three_dofs_and_no_contact() -> Non
     assert model_definition.tau_size == 3
     assert "translations\txz" not in biomod_text
     assert "contact\tplatform_contact" not in biomod_text
+
+
+def test_segment_center_of_mass_positions_stay_on_the_expected_segments() -> None:
+    """Each segmental CoM should lie between its distal and proximal joints."""
+
+    model_definition = PlanarJumperModelDefinition(AthleteMorphology(height_m=1.60, mass_kg=50.0))
+    q_init = model_definition.initial_joint_configuration_rad
+    segment_coms = model_definition.segment_center_of_mass_positions(q_init)
+    lengths = model_definition.morphology.segment_lengths
+
+    assert set(segment_coms) == {"leg_foot", "thigh", "trunk"}
+    assert segment_coms["leg_foot"][1] > 0.0
+    assert segment_coms["leg_foot"][1] < lengths.leg_foot + 1e-8
+    assert segment_coms["thigh"][1] > 0.0
+    assert segment_coms["trunk"][1] > segment_coms["thigh"][1]
