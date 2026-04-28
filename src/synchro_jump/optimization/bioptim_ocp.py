@@ -461,12 +461,24 @@ def _predicted_apex_height(controller, gravity: float = 9.81):
 
     q, qdot, _ = _controller_q_qdot_tau(controller)
     com = controller.model.center_of_mass()(q, controller.parameters.cx)
-    com_velocity = controller.model.center_of_mass_velocity()(q, qdot, controller.parameters.cx)
-    vertical_velocity = _symbolic_positive_part(com_velocity[2])
+    vertical_velocity = _symbolic_positive_part(_vertical_com_velocity(controller))
     return -(com[2] + vertical_velocity**2 / (2.0 * gravity))
 
 
 _predicted_apex_height.__name__ = "predicted_apex_height"
+
+
+def _vertical_com_velocity(controller):
+    """Return the vertical CoM velocity component."""
+
+    q, qdot, _ = _controller_q_qdot_tau(controller)
+    com_velocity = controller.model.center_of_mass_velocity()(q, qdot, controller.parameters.cx)
+    if getattr(com_velocity, "shape", None) == (3, 1):
+        return com_velocity[2, 0]
+    return com_velocity[2]
+
+
+_vertical_com_velocity.__name__ = "vertical_com_velocity"
 
 
 def _final_com_anteroposterior_velocity_squared(controller):
@@ -1229,6 +1241,13 @@ class VerticalJumpBioptimOcpBuilder:
             min_bound=-self.settings.angular_momentum_bound_n_s,
             max_bound=self.settings.angular_momentum_bound_n_s,
         )
+        for node in (Node.ALL_SHOOTING, Node.END):
+            constraints.add(
+                _vertical_com_velocity,
+                node=node,
+                min_bound=0.0,
+                max_bound=1e6,
+            )
         constraints.add(
             ConstraintFcn.TRACK_CONTROL,
             key="tau_joints",

@@ -13,6 +13,7 @@ from synchro_jump.optimization.bioptim_ocp import (
     VerticalJumpBioptimOcpBuilder,
     _import_bioptim_build_api,
     _shooting_weight_with_excluded_tail,
+    _vertical_com_velocity,
 )
 from synchro_jump.optimization.problem import (
     CONTACT_MODEL_COMPLIANT_UNILATERAL,
@@ -274,3 +275,26 @@ def test_aligned_initial_configuration_nulls_com_x_when_bioptim_is_available(tmp
     ).reshape((-1,))
 
     assert com[0] == pytest.approx(0.0, abs=1e-8)
+
+
+def test_vertical_com_velocity_returns_the_vertical_component() -> None:
+    """The custom CoM-velocity helper should expose the vertical component only."""
+
+    controller = SimpleNamespace(
+        model=SimpleNamespace(
+            center_of_mass_velocity=lambda: (
+                lambda _q, _qdot, _params: np.array([[1.2], [-0.4], [3.6]])
+            )
+        ),
+        parameters=SimpleNamespace(cx=np.array([])),
+        cx=np.array([]),
+        states={
+            "q": SimpleNamespace(cx=np.zeros((3, 1))),
+            "qdot": SimpleNamespace(cx=np.zeros((3, 1))),
+        },
+        controls={
+            "tau": SimpleNamespace(cx=np.zeros((3, 1))),
+        },
+    )
+
+    assert float(_vertical_com_velocity(controller)) == pytest.approx(3.6)
