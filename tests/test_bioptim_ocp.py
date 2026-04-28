@@ -244,13 +244,13 @@ def test_build_ocp_reduces_knee_torque_bounds_with_platform_mode(tmp_path: Path)
     assert tau_bounds.max[1, 0] == pytest.approx(1000.0)
 
 
-def test_shooting_weight_with_excluded_tail_zeroes_the_last_three_nodes() -> None:
-    """The torque regularization selector should deactivate the last three shooting nodes."""
+def test_shooting_weight_with_excluded_tail_softens_the_last_three_nodes() -> None:
+    """The torque regularization selector should keep a small penalty on the last nodes."""
 
-    weights = _shooting_weight_with_excluded_tail(10, 3)
+    weights = _shooting_weight_with_excluded_tail(10, 3, 0.2)
 
     assert np.allclose(weights[:7], 1.0)
-    assert np.allclose(weights[7:], 0.0)
+    assert np.allclose(weights[7:], 0.2)
 
 
 def test_aligned_initial_configuration_nulls_com_x_when_bioptim_is_available(tmp_path: Path) -> None:

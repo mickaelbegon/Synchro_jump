@@ -123,3 +123,9 @@ def test_settings_reject_torque_regularization_tail_outside_valid_range() -> Non
 
     with pytest.raises(ValueError, match="torque_regularization_excluded_tail_nodes"):
         VerticalJumpOcpSettings(athlete_mass_kg=50.0, torque_regularization_excluded_tail_nodes=100)
+
+    with pytest.raises(ValueError, match="torque_regularization_tail_weight"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, torque_regularization_tail_weight=-0.1)
+
+    with pytest.raises(ValueError, match="torque_regularization_tail_weight"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, torque_regularization_tail_weight=1.1)

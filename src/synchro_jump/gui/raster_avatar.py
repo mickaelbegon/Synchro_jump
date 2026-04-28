@@ -77,6 +77,16 @@ def _is_foreground(pixel: tuple[int, int, int, int]) -> bool:
     return pixel[3] > 0 and (pixel[0] < 245 or pixel[1] < 245 or pixel[2] < 245)
 
 
+def _looks_like_light_neutral_background(pixel: tuple[int, int, int, int]) -> bool:
+    """Return whether one pixel likely belongs to the exported checker background."""
+
+    if pixel[3] == 0:
+        return False
+    color_span = max(pixel[:3]) - min(pixel[:3])
+    mean_value = sum(pixel[:3]) / 3.0
+    return color_span <= 12 and mean_value >= 225.0
+
+
 def _component_centers(image) -> list[tuple[float, float]]:
     width, height = image.size
     pixels = image.load()
@@ -182,11 +192,25 @@ def _load_transparent_sprite(filename: str):
     for y in range(height):
         for x in range(width):
             r, g, b, a = pixels[x, y]
-            if r > 245 and g > 245 and b > 245:
+            if _looks_like_light_neutral_background((r, g, b, a)):
                 pixels[x, y] = (255, 255, 255, 0)
             else:
                 pixels[x, y] = (r, g, b, a)
     return image
+
+
+def _foreground_bbox(image) -> tuple[int, int, int, int]:
+    """Return the bounding box of non-transparent pixels."""
+
+    alpha = np.asarray(image)[..., 3]
+    nonzero = np.argwhere(alpha > 0)
+    if nonzero.size == 0:
+        raise ValueError("Sprite image does not contain any visible foreground pixels")
+    top = int(nonzero[:, 0].min())
+    bottom = int(nonzero[:, 0].max())
+    left = int(nonzero[:, 1].min())
+    right = int(nonzero[:, 1].max())
+    return left, top, right + 1, bottom + 1
 
 
 @lru_cache(maxsize=8)
@@ -240,11 +264,19 @@ def sprite_array_and_anchors(
     """Return one flipped sprite array with lower-origin anchors."""
 
     image = _load_transparent_sprite(sprite_spec(name).filename)
-    array = np.flipud(np.asarray(image))
-    width, height = image.size
     spec = sprite_spec(name)
-    distal_anchor = (spec.distal_anchor_px[0], height - spec.distal_anchor_px[1])
-    proximal_anchor = (spec.proximal_anchor_px[0], height - spec.proximal_anchor_px[1])
+    left, top, right, bottom = _foreground_bbox(image)
+    image = image.crop((left, top, right, bottom))
+    width, height = image.size
+    distal_anchor = (
+        spec.distal_anchor_px[0] - left,
+        height - (spec.distal_anchor_px[1] - top),
+    )
+    proximal_anchor = (
+        spec.proximal_anchor_px[0] - left,
+        height - (spec.proximal_anchor_px[1] - top),
+    )
+    array = np.flipud(np.asarray(image))
     if flip_horizontal:
         array = np.fliplr(array)
         distal_anchor = (width - distal_anchor[0], distal_anchor[1])

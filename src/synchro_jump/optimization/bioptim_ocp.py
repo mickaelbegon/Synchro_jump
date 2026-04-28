@@ -185,8 +185,9 @@ def _constant_bounds_with_fixed_start(lower_bounds, upper_bounds, start_values):
 def _shooting_weight_with_excluded_tail(
     n_shooting: int,
     excluded_tail_nodes: int,
+    tail_weight: float = 0.0,
 ):
-    """Return one per-shooting-node weight vector with a zeroed tail."""
+    """Return one per-shooting-node weight vector with a softened tail."""
 
     if n_shooting <= 0:
         raise ValueError("n_shooting must be strictly positive")
@@ -194,10 +195,12 @@ def _shooting_weight_with_excluded_tail(
         raise ValueError("excluded_tail_nodes must stay non-negative")
     if excluded_tail_nodes >= n_shooting:
         raise ValueError("excluded_tail_nodes must stay below n_shooting")
+    if not (0.0 <= tail_weight <= 1.0):
+        raise ValueError("tail_weight must stay within [0, 1]")
 
     weights = np.ones((n_shooting,), dtype=float)
     if excluded_tail_nodes:
-        weights[-excluded_tail_nodes:] = 0.0
+        weights[-excluded_tail_nodes:] = tail_weight
     return weights
 
 
@@ -1121,6 +1124,7 @@ class VerticalJumpBioptimOcpBuilder:
         torque_regularization_selector = _shooting_weight_with_excluded_tail(
             self.settings.n_shooting,
             self.settings.torque_regularization_excluded_tail_nodes,
+            self.settings.torque_regularization_tail_weight,
         )
         torque_regularization_weight = ObjectiveWeight(
             1e-5 * torque_regularization_selector,
