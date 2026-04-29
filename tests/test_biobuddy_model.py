@@ -49,8 +49,8 @@ def test_initial_alignment_keeps_requested_knee_and_hip_flexion() -> None:
     q_aligned = model_definition.initial_joint_configuration_rad
 
     assert q_aligned[2] != pytest.approx(q_crouched[2])
-    assert q_aligned[3] == pytest.approx(-math.radians(100.0))
-    assert q_aligned[4] == pytest.approx(math.radians(100.0))
+    assert q_aligned[3] == pytest.approx(math.pi / 2.0)
+    assert q_aligned[4] == pytest.approx(-math.pi / 2.0)
 
 
 def test_no_platform_model_definition_exposes_three_dofs_and_no_contact() -> None:

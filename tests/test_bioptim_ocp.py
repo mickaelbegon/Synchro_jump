@@ -292,8 +292,8 @@ def test_aligned_initial_configuration_keeps_knee_and_hip_flexion_when_bioptim_i
 
     aligned_q = np.asarray(builder.aligned_initial_joint_configuration_rad(model_path=model_path), dtype=float)
 
-    assert aligned_q[1] == pytest.approx(-np.deg2rad(100.0))
-    assert aligned_q[2] == pytest.approx(np.deg2rad(100.0))
+    assert aligned_q[1] == pytest.approx(np.pi / 2.0)
+    assert aligned_q[2] == pytest.approx(-np.pi / 2.0)
 
 
 

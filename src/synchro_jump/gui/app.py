@@ -859,6 +859,12 @@ class SynchroJumpApp:
             alpha=0.32,
             show_labels=False,
         )
+        self._draw_segment_coordinate_frames(
+            self.pose_axis,
+            initial_points,
+            alpha=0.45,
+            label_prefix="Repere initial",
+        )
 
         q_trajectory = self._runtime_q_trajectory()
         if q_trajectory is not None and q_trajectory.shape[0] >= 3:
@@ -935,6 +941,12 @@ class SynchroJumpApp:
                 animated_segment_coms,
                 alpha=0.95,
                 show_labels=True,
+            )
+            self._draw_segment_coordinate_frames(
+                self.pose_axis,
+                animated_points,
+                alpha=0.95,
+                label_prefix="Repere segment",
             )
             if self.runtime_solution is not None and self.runtime_solution.contact_force_trajectory_n.size:
                 reaction_force_ap = 0.0
@@ -1059,6 +1071,68 @@ class SynchroJumpApp:
             alpha=alpha,
             zorder=6.7,
         )
+
+    def _draw_segment_coordinate_frames(
+        self,
+        axis,
+        points: dict[str, tuple[float, float]],
+        *,
+        alpha: float,
+        label_prefix: str,
+    ) -> None:
+        """Draw the local coordinate frames of the three segments.
+
+        The local z-axis follows the segment from distal to proximal. The local
+        x-axis is the 90-degree clockwise rotation of that direction in the
+        sagittal plane.
+        """
+
+        segment_definitions = (
+            ("jambe/pied", points["foot"], points["knee"]),
+            ("cuisse", points["knee"], points["hip"]),
+            ("tronc", points["hip"], points["head"]),
+        )
+        frame_length = 0.08
+
+        for segment_name, origin, distal_to_proximal_end in segment_definitions:
+            segment_vector = np.array(
+                [
+                    distal_to_proximal_end[0] - origin[0],
+                    distal_to_proximal_end[1] - origin[1],
+                ],
+                dtype=float,
+            )
+            segment_norm = float(np.linalg.norm(segment_vector))
+            if segment_norm <= 1e-12:
+                continue
+            local_z = segment_vector / segment_norm
+            local_x = np.array([local_z[1], -local_z[0]], dtype=float)
+            x_tip = np.array(origin, dtype=float) + frame_length * local_x
+            z_tip = np.array(origin, dtype=float) + frame_length * local_z
+
+            axis.annotate(
+                "",
+                xy=(x_tip[0], x_tip[1]),
+                xytext=origin,
+                arrowprops=dict(arrowstyle="->", color="#c1121f", lw=1.0, alpha=alpha),
+                zorder=7.1,
+            )
+            axis.annotate(
+                "",
+                xy=(z_tip[0], z_tip[1]),
+                xytext=origin,
+                arrowprops=dict(arrowstyle="->", color="#2a9d8f", lw=1.0, alpha=alpha),
+                zorder=7.1,
+            )
+            axis.text(
+                origin[0] + 0.01,
+                origin[1] + 0.01,
+                segment_name,
+                color="#495057",
+                fontsize=7,
+                alpha=min(1.0, alpha),
+                zorder=7.2,
+            )
 
     def _avatar_status_line(self) -> str:
         """Return one concise status line for raster avatar availability."""

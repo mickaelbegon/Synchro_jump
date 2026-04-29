@@ -17,8 +17,8 @@ def test_segment_lengths_sum_to_body_height() -> None:
 
 
 def test_default_initial_flexion_matches_problem_statement() -> None:
-    """The initial posture uses 100 degrees of hip and knee flexion."""
+    """The initial generalized knee/hip amplitudes default to 90 degrees."""
 
     morphology = AthleteMorphology()
 
-    assert morphology.initial_joint_flexion_deg == pytest.approx(100.0)
+    assert morphology.initial_joint_flexion_deg == pytest.approx(90.0)

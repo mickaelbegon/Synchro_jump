@@ -71,7 +71,7 @@ class VerticalJumpOcpSettings:
     expand_dynamics: bool = True
     ipopt_linear_solver: str = "ma57"
     ipopt_hsl_library_path: str | None = None
-    initial_joint_flexion_deg: float = 100.0
+    initial_joint_flexion_deg: float = 90.0
     force_slider_values_newtons: tuple[float, ...] = field(default_factory=discrete_force_slider_values)
     mass_slider_values_kg: tuple[float, ...] = field(default_factory=discrete_mass_slider_values)
 

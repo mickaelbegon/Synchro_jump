@@ -121,12 +121,17 @@ class PlanarJumperModelDefinition:
 
     @property
     def crouched_joint_configuration_rad(self) -> tuple[float, float, float, float, float]:
-        """Return the crouched posture before CoM alignment over the ankle."""
+        """Return the crouched posture before CoM alignment over the ankle.
+
+        The requested initial generalized coordinates are:
+        - knee:  +pi/2
+        - hip:   -pi/2
+        """
 
         flexion = math.radians(self.morphology.initial_joint_flexion_deg)
         if self.floating_base:
-            return (0.0, 0.0, 0.0, -flexion, flexion)
-        return (0.0, -flexion, flexion)
+            return (0.0, 0.0, 0.0, flexion, -flexion)
+        return (0.0, flexion, -flexion)
 
     def _unpack_q_values(
         self,
