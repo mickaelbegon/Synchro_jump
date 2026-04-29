@@ -833,14 +833,14 @@ class SynchroJumpApp:
 
         self.pose_axis.clear()
         if avatar_available:
-            self._draw_raster_avatar(self.pose_axis, initial_points, alpha=0.22)
+            self._draw_raster_avatar(self.pose_axis, initial_points, alpha=0.12)
             self._draw_kinematic_chain_overlay(
                 self.pose_axis,
                 initial_points,
                 color="#6b6b6b",
                 label="Posture initiale",
                 linestyle="--",
-                alpha=0.65,
+                alpha=0.9,
             )
         else:
             self._draw_stick_figure(
@@ -910,7 +910,7 @@ class SynchroJumpApp:
                 morphology,
                 animated_q,
             )
-            if not self._draw_raster_avatar(self.pose_axis, animated_points, alpha=1.0):
+            if not self._draw_raster_avatar(self.pose_axis, animated_points, alpha=0.55):
                 self._draw_stick_figure(
                     self.pose_axis,
                     animated_points,
@@ -926,7 +926,7 @@ class SynchroJumpApp:
                     color="#1d3557",
                     label="Chaine cinematique",
                     linestyle="-",
-                    alpha=0.9,
+                    alpha=1.0,
                 )
             self._draw_center_of_mass_markers(
                 self.pose_axis,
@@ -1033,8 +1033,17 @@ class SynchroJumpApp:
         axis.plot(
             chain_x,
             chain_y,
+            color="white",
+            linewidth=4.6,
+            linestyle=linestyle,
+            alpha=min(1.0, alpha),
+            zorder=6.55,
+        )
+        axis.plot(
+            chain_x,
+            chain_y,
             color=color,
-            linewidth=1.8,
+            linewidth=2.6,
             linestyle=linestyle,
             alpha=alpha,
             zorder=6.6,
@@ -1045,8 +1054,8 @@ class SynchroJumpApp:
             chain_y,
             color=color,
             edgecolors="white",
-            linewidths=0.6,
-            s=22,
+            linewidths=1.0,
+            s=40,
             alpha=alpha,
             zorder=6.7,
         )
