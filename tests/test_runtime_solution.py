@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib.util
 
 import numpy as np
+import pytest
 
 from synchro_jump.optimization.problem import CONTACT_MODEL_COMPLIANT_UNILATERAL, VerticalJumpOcpSettings
 from synchro_jump.optimization.runtime_solution import (
     _add_platform_force_to_numeric_generalized_force,
     _configure_ipopt_solver,
+    _print_terminal_objective_breakdown,
     ensure_local_hsl_library,
     solve_ocp_runtime_summary,
     summarize_solved_ocp,
@@ -153,6 +156,9 @@ def test_summarize_solved_ocp_passes_selected_contact_model_to_evaluator(tmp_pat
 def test_solve_ocp_runtime_summary_reports_missing_optional_dependency(tmp_path: Path) -> None:
     """The solve wrapper should fail gracefully without `bioptim`."""
 
+    if importlib.util.find_spec("bioptim") is not None:
+        pytest.skip("`bioptim` is installed in this environment")
+
     summary = solve_ocp_runtime_summary(
         VerticalJumpOcpSettings(athlete_mass_kg=50.0),
         1100.0,
@@ -204,6 +210,33 @@ def test_configure_ipopt_solver_enables_iteration_and_timing_logs() -> None:
     assert solver.options["print_timing_statistics"] == "yes"
     assert solver.options["print_frequency_iter"] == 1
     assert solver.options["print_frequency_time"] == 0
+
+
+def test_print_terminal_objective_breakdown_reports_split_jump_terms(capsys) -> None:
+    """The terminal breakdown should dissociate CoM height and ballistic gain."""
+
+    summary = summarize_solved_ocp(
+        _FakeSolution(),
+        model_path=Path("dummy.bioMod"),
+        requested_iterations=5,
+        n_phases=1,
+        merge_nodes_token="nodes",
+        peak_force_newtons=1100.0,
+        platform_mass_kg=80.0,
+        total_duration_s=2.0,
+        com_evaluator=lambda *_args, **_kwargs: (np.array([0.9, 1.0, 1.08]), np.array([0.0, 0.6, 1.4])),
+        contact_force_evaluator=lambda *_args, **_kwargs: (
+            np.array([1100.0, 1100.0, 1050.0]),
+            np.array([450.0, 180.0, 0.0]),
+            np.array([0.2, 0.1, -0.3]),
+        ),
+    )
+
+    _print_terminal_objective_breakdown(summary)
+    captured = capsys.readouterr().out
+
+    assert "-z_CoM(T)" in captured
+    assert "-max(vz_CoM(T), 0)^2 / (2g)" in captured
 
 
 def test_ensure_local_hsl_library_copies_one_candidate(tmp_path: Path) -> None:

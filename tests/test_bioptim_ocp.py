@@ -277,6 +277,25 @@ def test_aligned_initial_configuration_nulls_com_x_when_bioptim_is_available(tmp
     assert com[0] == pytest.approx(0.0, abs=1e-8)
 
 
+def test_aligned_initial_configuration_keeps_knee_and_hip_flexion_when_bioptim_is_available(tmp_path: Path) -> None:
+    """The exported-model alignment should only adjust the ankle-equivalent angle."""
+
+    pytest.importorskip("bioptim")
+    pytest.importorskip("biorbd_casadi")
+
+    settings = VerticalJumpOcpSettings(
+        athlete_mass_kg=50.0,
+        contact_model=CONTACT_MODEL_NO_PLATFORM,
+    )
+    builder = VerticalJumpBioptimOcpBuilder(settings)
+    model_path = builder.export_model(tmp_path)
+
+    aligned_q = np.asarray(builder.aligned_initial_joint_configuration_rad(model_path=model_path), dtype=float)
+
+    assert aligned_q[1] == pytest.approx(-np.deg2rad(100.0))
+    assert aligned_q[2] == pytest.approx(np.deg2rad(100.0))
+
+
 
 
 def test_vertical_com_velocity_returns_the_vertical_component() -> None:

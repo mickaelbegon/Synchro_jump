@@ -177,6 +177,22 @@ def _solution_scalar(value: Any) -> float | None:
     return float(array.reshape((-1,))[0])
 
 
+def _print_terminal_objective_breakdown(summary: OcpSolveSummary) -> None:
+    """Print a readable decomposition of the jump objective in the terminal."""
+
+    if summary.takeoff_com_height_m is None or summary.takeoff_com_vertical_velocity_m_s is None:
+        return
+
+    positive_vertical_velocity = max(float(summary.takeoff_com_vertical_velocity_m_s), 0.0)
+    ballistic_gain = positive_vertical_velocity**2 / (2.0 * 9.81)
+    print("\n[SynchroJump] Decomposition numerique de l'objectif de saut")
+    print(f"  -z_CoM(T) = {-float(summary.takeoff_com_height_m):.6f}")
+    print(f"  -max(vz_CoM(T), 0)^2 / (2g) = {-ballistic_gain:.6f}")
+    print(f"  z_CoM(T) = {float(summary.takeoff_com_height_m):.6f} m")
+    print(f"  max(vz_CoM(T), 0) = {positive_vertical_velocity:.6f} m/s")
+    print(f"  gain balistique predit = {ballistic_gain:.6f} m")
+
+
 def _contact_index_from_name(contact_names: tuple[str, ...], contact_name: str) -> int:
     """Resolve one rigid-contact index from one exported contact name."""
 
@@ -700,6 +716,7 @@ def solve_ocp_runtime_summary(
             maximum_iterations,
             summary,
         )
+        _print_terminal_objective_breakdown(summary)
         return summary
     except ModuleNotFoundError as exc:
         dependency_name = getattr(exc, "name", None) or str(exc)

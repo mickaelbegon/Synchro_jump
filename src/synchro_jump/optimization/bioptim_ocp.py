@@ -222,10 +222,16 @@ def _align_configuration_to_zero_com_x(
     model,
     initial_q,
     *,
+    optimized_dof_indices: tuple[int, ...],
     tolerance: float = 1e-10,
     max_iterations: int = 25,
 ) -> np.ndarray:
-    """Align one configuration so that the model CoM horizontal position reaches zero."""
+    """Align one configuration so that the model CoM horizontal position reaches zero.
+
+    Only the requested generalized coordinates are updated. This lets us keep
+    the prescribed knee and hip flexion angles fixed while adjusting only the
+    ankle-equivalent rotation.
+    """
 
     from casadi import DM, Function, SX, jacobian
 
@@ -246,13 +252,14 @@ def _align_configuration_to_zero_com_x(
         if abs(horizontal_error) <= tolerance:
             break
 
-        jacobian_row = np.asarray(jacobian_value, dtype=float).reshape((1, -1))
+        jacobian_row = np.asarray(jacobian_value, dtype=float).reshape((1, -1))[:, optimized_dof_indices]
         jacobian_norm_sq = float((jacobian_row @ jacobian_row.T).reshape((-1,))[0])
         if jacobian_norm_sq <= 1e-12:
             break
 
         pseudo_inverse = jacobian_row.T / jacobian_norm_sq
-        q_values -= pseudo_inverse * horizontal_error
+        updated_slice = q_values[list(optimized_dof_indices), :] - pseudo_inverse * horizontal_error
+        q_values[list(optimized_dof_indices), :] = updated_slice
 
     return q_values.reshape((-1,))
 
@@ -459,16 +466,25 @@ def _coupled_platform_dynamics_symbolic(
     return qddot, contact_force, platform_acceleration
 
 
-def _predicted_apex_height(controller, gravity: float = 9.81):
-    """Custom Mayer objective based on CoM height and vertical velocity."""
+def _negative_final_com_height(controller):
+    """Return the negative take-off CoM height."""
 
-    q, qdot, _ = _controller_q_qdot_tau(controller)
+    q, _, _ = _controller_q_qdot_tau(controller)
     com = controller.model.center_of_mass()(q, controller.parameters.cx)
+    return -com[2]
+
+
+_negative_final_com_height.__name__ = "negative_final_com_height"
+
+
+def _negative_predicted_ballistic_gain(controller, gravity: float = 9.81):
+    """Return the negative ballistic height gain predicted from final CoM velocity."""
+
     vertical_velocity = _symbolic_positive_part(_vertical_com_velocity(controller))
-    return -(com[2] + vertical_velocity**2 / (2.0 * gravity))
+    return -(vertical_velocity**2 / (2.0 * gravity))
 
 
-_predicted_apex_height.__name__ = "predicted_apex_height"
+_negative_predicted_ballistic_gain.__name__ = "negative_predicted_ballistic_gain"
 
 
 def _vertical_com_velocity(controller):
@@ -1058,16 +1074,23 @@ class VerticalJumpBioptimOcpBuilder:
         tolerance: float = 1e-10,
         max_iterations: int = 25,
     ) -> tuple[float, ...]:
-        """Return one initial posture aligned on the true exported-model CoM."""
+        """Return one initial posture aligned on the true exported-model CoM.
+
+        The knee and hip stay fixed at the requested flexion angle; only the
+        ankle-equivalent rotation is corrected so the CoM projection reaches the
+        foot support point.
+        """
 
         from bioptim import BiorbdModel
 
         model_filepath = Path(model_path) if model_path is not None else self.export_model(Path.cwd() / "generated")
         model_definition = _model_definition_from_settings(self.settings)
         initial_q = model_definition.crouched_joint_configuration_rad
+        ankle_rotation_index = 2 if _floating_base_for_contact_model(self.settings.contact_model) else 0
         aligned_q = _align_configuration_to_zero_com_x(
             BiorbdModel(str(model_filepath)),
             initial_q,
+            optimized_dof_indices=(ankle_rotation_index,),
             tolerance=tolerance,
             max_iterations=max_iterations,
         )
@@ -1134,8 +1157,9 @@ class VerticalJumpBioptimOcpBuilder:
             1e-6 * torque_regularization_selector,
             interpolation=InterpolationType.EACH_FRAME,
         )
+        objective_functions.add(_negative_final_com_height, custom_type=ObjectiveFcn.Mayer, node=Node.END)
         objective_functions.add(
-            _predicted_apex_height,
+            _negative_predicted_ballistic_gain,
             custom_type=ObjectiveFcn.Mayer,
             node=Node.END,
             gravity=9.81,
