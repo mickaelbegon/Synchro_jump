@@ -11,6 +11,11 @@ import numpy as np
 
 _REPO_ASSET_DIR = Path(__file__).resolve().parents[3] / "assets" / "avatar_segments"
 _PACKAGE_ASSET_DIR = Path(__file__).resolve().parents[1] / "assets" / "avatar_segments"
+_SPRITE_FILENAMES = {
+    "leg_foot": "jambe_pied_extension_flipped.png",
+    "thigh": "cuisse_flipped.png",
+    "trunk": "tronc_mains_hanches_flipped.png",
+}
 
 
 @dataclass(frozen=True)
@@ -55,7 +60,7 @@ def avatar_rendering_diagnostics() -> tuple[bool, str]:
         return False, "Pillow n'est pas installe, retour au stick figure."
 
     asset_dir = _asset_dir()
-    expected_files = ("cuisse.png", "jambe_pied_extension.png", "tronc_mains_hanches.png")
+    expected_files = tuple(_SPRITE_FILENAMES.values())
     missing_files = [filename for filename in expected_files if not (asset_dir / filename).exists()]
     if missing_files:
         return False, f"assets raster manquants: {', '.join(missing_files)}"
@@ -220,12 +225,7 @@ def sprite_spec(name: str) -> SpriteSpec:
     if not pillow_available():
         raise RuntimeError("Pillow is required for raster avatar rendering")
 
-    filename_by_name = {
-        "leg_foot": "jambe_pied_extension.png",
-        "thigh": "cuisse.png",
-        "trunk": "tronc_mains_hanches.png",
-    }
-    filename = filename_by_name[name]
+    filename = _SPRITE_FILENAMES[name]
     image = _load_transparent_sprite(filename)
     centers = _component_centers(image)
 

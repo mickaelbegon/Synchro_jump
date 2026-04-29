@@ -34,7 +34,7 @@ class SynchroJumpApp:
     default_solve_iterations = 1000
     max_solve_iterations = 1000
     animation_delay_ms = 80
-    avatar_flip_horizontal = True
+    avatar_flip_horizontal = False
     contact_model_labels = {
         CONTACT_MODEL_RIGID_UNILATERAL: "Rigide unilateral",
         CONTACT_MODEL_COMPLIANT_UNILATERAL: "Compliant unilateral",
