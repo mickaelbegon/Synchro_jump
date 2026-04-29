@@ -12,9 +12,9 @@ import numpy as np
 _REPO_ASSET_DIR = Path(__file__).resolve().parents[3] / "assets" / "avatar_segments"
 _PACKAGE_ASSET_DIR = Path(__file__).resolve().parents[1] / "assets" / "avatar_segments"
 _SPRITE_FILENAMES = {
-    "leg_foot": "jambe_pied_extension_flipped.png",
-    "thigh": "cuisse_flipped.png",
-    "trunk": "tronc_mains_hanches_flipped.png",
+    "leg_foot": "jambe_pied_extension.png",
+    "thigh": "cuisse.png",
+    "trunk": "tronc_mains_hanches.png",
 }
 
 
@@ -25,6 +25,19 @@ class SpriteSpec:
     filename: str
     distal_anchor_px: tuple[float, float]
     proximal_anchor_px: tuple[float, float]
+
+
+# Manual anchor overrides are expressed in original image pixel coordinates
+# (origin at top-left). The distal leg/foot anchor is intentionally placed at
+# the metatarsal head rather than the toe tip so the sprite rotates around the
+# forefoot support point that contacts the ground.
+_MANUAL_SPRITE_SPECS = {
+    "leg_foot": SpriteSpec(
+        filename="jambe_pied_extension.png",
+        distal_anchor_px=(591.0, 1110.0),
+        proximal_anchor_px=(543.3186372745491, 340.2314629258517),
+    ),
+}
 
 
 def pillow_available() -> bool:
@@ -226,6 +239,8 @@ def sprite_spec(name: str) -> SpriteSpec:
         raise RuntimeError("Pillow is required for raster avatar rendering")
 
     filename = _SPRITE_FILENAMES[name]
+    if name in _MANUAL_SPRITE_SPECS:
+        return _MANUAL_SPRITE_SPECS[name]
     image = _load_transparent_sprite(filename)
     centers = _component_centers(image)
 

@@ -55,7 +55,7 @@ class SynchroJumpApp:
         self.contact_model_var = tk.StringVar(
             value=self.contact_model_labels[self.base_settings.contact_model]
         )
-        self.use_cache_var = tk.BooleanVar(value=True)
+        self.use_cache_var = tk.BooleanVar(value=False)
         self.solve_iterations_var = tk.IntVar(value=self.default_solve_iterations)
         self.animation_frame_var = tk.IntVar(value=0)
         self.status_var = tk.StringVar()

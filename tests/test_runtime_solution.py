@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import importlib.util
+import inspect
 
 import numpy as np
 import pytest
@@ -302,3 +303,11 @@ def test_summarize_solved_ocp_can_use_no_platform_equivalent_contact(tmp_path: P
     assert summary.contact_model == "no_platform"
     assert np.allclose(summary.contact_force_trajectory_n, [0.0, 25.0, 50.0])
     assert np.allclose(summary.platform_force_trajectory_n, [0.0, 0.0, 0.0])
+
+
+def test_solve_ocp_runtime_summary_disables_cache_by_default() -> None:
+    """Runtime solves should not reuse cached solutions unless explicitly requested."""
+
+    signature = inspect.signature(solve_ocp_runtime_summary)
+
+    assert signature.parameters["use_cache"].default is False

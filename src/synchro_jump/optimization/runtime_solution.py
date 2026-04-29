@@ -623,7 +623,7 @@ def solve_ocp_runtime_summary(
     *,
     model_output_dir: str | Path = "generated",
     cache_dir: str | Path = "generated/optimal_solution_cache",
-    use_cache: bool = True,
+    use_cache: bool = False,
     maximum_iterations: int = 1000,
     print_level: int = 5,
 ) -> OcpSolveSummary:
