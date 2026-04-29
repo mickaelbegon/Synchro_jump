@@ -277,6 +277,8 @@ def test_aligned_initial_configuration_nulls_com_x_when_bioptim_is_available(tmp
     assert com[0] == pytest.approx(0.0, abs=1e-8)
 
 
+
+
 def test_vertical_com_velocity_returns_the_vertical_component() -> None:
     """The custom CoM-velocity helper should expose the vertical component only."""
 

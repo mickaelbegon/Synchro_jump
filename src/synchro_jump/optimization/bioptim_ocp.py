@@ -1150,7 +1150,7 @@ class VerticalJumpBioptimOcpBuilder:
             _final_extension_error_squared,
             custom_type=ObjectiveFcn.Mayer,
             node=Node.END,
-            weight=5e-2,
+            weight=self.settings.final_extension_mayer_weight,
         )
         objective_functions.add(
             ObjectiveFcn.Lagrange.MINIMIZE_CONTROL,

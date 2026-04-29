@@ -73,6 +73,8 @@ class SynchroJumpApp:
         self._cached_blueprint = None
         self._cached_initial_q_key = None
         self._cached_initial_q: tuple[float, ...] | None = None
+        self._cached_display_model_key = None
+        self._cached_display_model = None
         self._cached_runtime_com_key = None
         self._cached_runtime_com_trajectory: np.ndarray | None = None
         self._cached_runtime_com_velocity_key = None
@@ -213,6 +215,7 @@ class SynchroJumpApp:
 
         figure = Figure(figsize=(13.6, 7.2), dpi=100)
         gridspec = figure.add_gridspec(3, 3, width_ratios=(0.95, 0.95, 1.15), height_ratios=(0.52, 1.0, 1.0))
+        figure.subplots_adjust(left=0.06, right=0.98, top=0.95, bottom=0.08, wspace=0.34, hspace=0.42)
         self.summary_axis = figure.add_subplot(gridspec[0, 0:2])
         self.force_axis = figure.add_subplot(gridspec[1:, 0])
         self.pose_axis = figure.add_subplot(gridspec[1:, 1])
@@ -269,6 +272,8 @@ class SynchroJumpApp:
         self._cached_blueprint = None
         self._cached_initial_q_key = None
         self._cached_initial_q = None
+        self._cached_display_model_key = None
+        self._cached_display_model = None
 
     def _clear_runtime_cache(self) -> None:
         """Invalidate cached runtime trajectories used only for plotting."""
@@ -421,6 +426,80 @@ class SynchroJumpApp:
         self._cached_initial_q_key = cache_key
         return self._cached_initial_q
 
+    def current_display_biorbd_model(self):
+        """Return one cached `BiorbdModel` matching the currently displayed sliders."""
+
+        cache_key = (self.current_contact_model_key(), self.current_mass_kg())
+        cached_key = getattr(self, "_cached_display_model_key", None)
+        cached_model = getattr(self, "_cached_display_model", None)
+        if cached_key == cache_key and cached_model is not None:
+            return cached_model
+
+        try:
+            from bioptim import BiorbdModel
+
+            builder = VerticalJumpBioptimOcpBuilder(settings=self.current_settings())
+            model_path = builder.export_model(Path("generated"))
+            cached_model = BiorbdModel(str(model_path))
+        except Exception:
+            cached_model = None
+
+        self._cached_display_model_key = cache_key
+        self._cached_display_model = cached_model
+        return self._cached_display_model
+
+    def _display_pose_and_com_from_q(
+        self,
+        morphology: AthleteMorphology,
+        q_values: tuple[float, ...] | list[float],
+    ) -> tuple[dict[str, tuple[float, float]], tuple[float, float], dict[str, tuple[float, float]]]:
+        """Return pose markers, global CoM, and segmental CoMs for one displayed state."""
+
+        biorbd_model = self.current_display_biorbd_model()
+        if biorbd_model is not None:
+            try:
+                from casadi import DM
+
+                q_array = np.asarray(q_values, dtype=float).reshape((-1, 1))
+                q_dm = DM(q_array)
+                parameters = DM()
+                marker_points = {}
+                for displayed_name, marker_name in (
+                    ("foot", "foot_contact"),
+                    ("knee", "knee"),
+                    ("hip", "hip"),
+                    ("head", "head"),
+                ):
+                    marker_index = biorbd_model.marker_index(marker_name)
+                    marker = np.asarray(biorbd_model.marker(marker_index)(q_dm, parameters), dtype=float).reshape((-1,))
+                    marker_points[displayed_name] = (float(marker[0]), float(marker[2]))
+
+                com = np.asarray(biorbd_model.center_of_mass()(q_dm, parameters), dtype=float).reshape((-1,))
+                global_com = (float(com[0]), float(com[2]))
+                segment_coms = {
+                    "leg_foot": (
+                        marker_points["foot"][0] + 0.55 * (marker_points["knee"][0] - marker_points["foot"][0]),
+                        marker_points["foot"][1] + 0.55 * (marker_points["knee"][1] - marker_points["foot"][1]),
+                    ),
+                    "thigh": (
+                        marker_points["knee"][0] + 0.45 * (marker_points["hip"][0] - marker_points["knee"][0]),
+                        marker_points["knee"][1] + 0.45 * (marker_points["hip"][1] - marker_points["knee"][1]),
+                    ),
+                    "trunk": (
+                        marker_points["hip"][0] + 0.5 * (marker_points["head"][0] - marker_points["hip"][0]),
+                        marker_points["hip"][1] + 0.5 * (marker_points["head"][1] - marker_points["hip"][1]),
+                    ),
+                }
+                return marker_points, global_com, segment_coms
+            except Exception:
+                pass
+
+        points = self._analytic_pose_points_from_q(morphology, tuple(q_values))
+        model_definition = self.current_model_definition()
+        global_com = model_definition.center_of_mass_position(tuple(q_values))
+        segment_coms = model_definition.segment_center_of_mass_positions(tuple(q_values))
+        return points, global_com, segment_coms
+
     def _runtime_q_trajectory(self) -> np.ndarray | None:
         """Return the full runtime generalized-coordinate trajectory when available."""
 
@@ -496,10 +575,12 @@ class SynchroJumpApp:
         if cached_key == cache_key and cached_trajectory is not None:
             return cached_trajectory
 
-        model_definition = self.current_model_definition()
         com_trajectory = np.zeros((2, q_trajectory.shape[1]), dtype=float)
         for frame_index in range(q_trajectory.shape[1]):
-            com_x, com_z = model_definition.center_of_mass_position(tuple(q_trajectory[:, frame_index].tolist()))
+            _, (com_x, com_z), _ = self._display_pose_and_com_from_q(
+                morphology,
+                tuple(q_trajectory[:, frame_index].tolist()),
+            )
             com_trajectory[:, frame_index] = (com_x, com_z)
         self._cached_runtime_com_key = cache_key
         self._cached_runtime_com_trajectory = com_trajectory
@@ -546,7 +627,8 @@ class SynchroJumpApp:
     ) -> dict[str, tuple[float, float]]:
         """Return the displayed segmental CoM positions for one generalized state."""
 
-        return self.current_model_definition().segment_center_of_mass_positions(tuple(q_values))
+        _, _, segment_coms = self._display_pose_and_com_from_q(self.current_morphology(), tuple(q_values))
+        return segment_coms
 
     def refresh(self, *, dynamic_only: bool = False) -> None:
         """Refresh the figures and the textual summary."""
@@ -738,16 +820,15 @@ class SynchroJumpApp:
         self.force_axis.set_ylabel("Force (N)")
         self.force_axis.set_title("Profils de force")
         self.force_axis.grid(alpha=0.25)
-        self.force_axis.legend(loc="upper right")
+        handles, labels = self.force_axis.get_legend_handles_labels()
+        if handles:
+            self.force_axis.legend(handles, labels, loc="upper left", fontsize=8.5, framealpha=0.9)
 
     def _draw_pose_figure(self, morphology: AthleteMorphology) -> None:
         """Draw the initial and optimized sagittal stick figures."""
 
-        model_definition = self.current_model_definition()
         initial_q = self.current_initial_q()
-        initial_points = self._pose_points_from_q(morphology, self.current_initial_q())
-        initial_com = model_definition.center_of_mass_position(initial_q)
-        initial_segment_coms = self._segment_com_positions(initial_q)
+        initial_points, initial_com, initial_segment_coms = self._display_pose_and_com_from_q(morphology, initial_q)
         avatar_available, _ = avatar_rendering_diagnostics()
 
         self.pose_axis.clear()
@@ -777,7 +858,6 @@ class SynchroJumpApp:
             initial_com,
             initial_segment_coms,
             alpha=0.32,
-            label_prefix="Initial",
             show_labels=False,
         )
 
@@ -818,17 +898,19 @@ class SynchroJumpApp:
                             arrowprops=dict(arrowstyle="->", color="#577590", lw=0.8, alpha=0.8),
                         )
                         self.pose_axis.text(
-                            com_position[0] + 0.015,
-                            com_position[1] + 0.015,
+                            com_position[0] + 0.01,
+                            com_position[1] + 0.01,
                             f"{speed:.4f} m/s",
                             color="#577590",
-                            fontsize=8,
+                            fontsize=7,
+                            alpha=0.8,
                         )
             animation_index = self.current_animation_frame()
             animated_q = tuple(q_trajectory[:, animation_index].tolist())
-            animated_points = self._pose_points_from_q(morphology, animated_q)
-            animated_com = model_definition.center_of_mass_position(animated_q)
-            animated_segment_coms = self._segment_com_positions(animated_q)
+            animated_points, animated_com, animated_segment_coms = self._display_pose_and_com_from_q(
+                morphology,
+                animated_q,
+            )
             if not self._draw_raster_avatar(self.pose_axis, animated_points, alpha=1.0):
                 self._draw_stick_figure(
                     self.pose_axis,
@@ -844,19 +926,8 @@ class SynchroJumpApp:
                 animated_com,
                 animated_segment_coms,
                 alpha=0.95,
-                label_prefix="Runtime",
                 show_labels=True,
             )
-            if com_trajectory is not None:
-                current_com = com_trajectory[:, animation_index]
-                self.pose_axis.scatter(
-                    [current_com[0]],
-                    [current_com[1]],
-                    color="#277da1",
-                    s=32,
-                    zorder=6,
-                    label="CoM courant",
-                )
             if self.runtime_solution is not None and self.runtime_solution.contact_force_trajectory_n.size:
                 reaction_force_ap = 0.0
                 if self.runtime_solution.external_force_ap_trajectory_n.size:
@@ -887,11 +958,13 @@ class SynchroJumpApp:
                     arrowprops=dict(arrowstyle="->", color="#90be6d", lw=1.1, alpha=0.9),
                 )
                 self.pose_axis.text(
-                    foot_point[0] + 0.015,
-                    foot_point[1] + reaction_scale * reaction_force_vertical + 0.015,
+                    0.02,
+                    0.08,
                     f"Fx={reaction_force_ap:.1f} N | Fz={reaction_force_vertical:.1f} N",
+                    transform=self.pose_axis.transAxes,
                     color="#588157",
                     fontsize=8,
+                    bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#d8f3dc", alpha=0.78),
                 )
 
         self.pose_axis.plot([-0.35, 0.35], [0.0, 0.0], color="#8c5e34", linewidth=4.0)
@@ -902,7 +975,15 @@ class SynchroJumpApp:
         self.pose_axis.set_ylabel("Vertical (m)")
         self.pose_axis.set_title("Modele 3 segments")
         self.pose_axis.grid(alpha=0.2)
-        self.pose_axis.legend(loc="upper right")
+        handles, labels = self.pose_axis.get_legend_handles_labels()
+        if handles:
+            self.pose_axis.legend(
+                handles,
+                labels,
+                loc="upper right",
+                fontsize=8.5,
+                framealpha=0.9,
+            )
 
     def _draw_stick_figure(
         self,
@@ -984,26 +1065,39 @@ class SynchroJumpApp:
         segment_centers: dict[str, tuple[float, float]],
         *,
         alpha: float,
-        label_prefix: str,
         show_labels: bool,
     ) -> None:
         """Draw the global and segmental CoM markers on the sagittal pose figure."""
 
-        axis.axvline(
-            support_x,
+        projection_x = center_of_mass[0]
+        ground_y = 0.0
+        axis.plot(
+            [projection_x, projection_x],
+            [ground_y, center_of_mass[1]],
             color="#8d99ae",
-            linewidth=0.9,
+            linewidth=1.0,
             linestyle=(0, (1, 2)),
-            alpha=max(0.2, 0.7 * alpha),
+            alpha=max(0.2, 0.75 * alpha),
             zorder=2.1,
-            label=f"{label_prefix} appui vertical" if show_labels else None,
+            label="Projection CoM" if show_labels else None,
+        )
+        axis.scatter(
+            [support_x],
+            [ground_y],
+            color="#8c5e34",
+            edgecolors="white",
+            linewidths=0.7,
+            s=32,
+            alpha=alpha,
+            zorder=6.0,
+            label="Bout du pied" if show_labels else None,
         )
         segment_style = {
             "leg_foot": ("CoM jambe/pied", "#f4a261", "s"),
             "thigh": ("CoM cuisse", "#e76f51", "^"),
             "trunk": ("CoM tronc", "#6d597a", "D"),
         }
-        for name, (label, color, marker) in segment_style.items():
+        for name, (_label, color, marker) in segment_style.items():
             point = segment_centers[name]
             axis.scatter(
                 [point[0]],
@@ -1015,7 +1109,6 @@ class SynchroJumpApp:
                 marker=marker,
                 alpha=alpha,
                 zorder=5.8,
-                label=label if show_labels else None,
             )
 
         axis.scatter(
@@ -1031,15 +1124,20 @@ class SynchroJumpApp:
             label="CoM global" if show_labels else None,
         )
         if show_labels:
-            horizontal_offset = center_of_mass[0] - support_x
-            axis.annotate(
-                f"CoM global\nΔx={horizontal_offset:+.3f} m",
-                xy=center_of_mass,
-                xytext=(center_of_mass[0] + 0.03, center_of_mass[1] + 0.05),
+            horizontal_offset = projection_x - support_x
+            axis.text(
+                0.02,
+                0.98,
+                "Projection CoM:\n"
+                f"x_CoM={projection_x:+.3f} m\n"
+                f"x_appui={support_x:+.3f} m\n"
+                f"Δx={horizontal_offset:+.3f} m",
+                transform=axis.transAxes,
+                ha="left",
+                va="top",
                 fontsize=8,
                 color="#1d3557",
                 bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#cbd5e1", alpha=0.85),
-                arrowprops=dict(arrowstyle="->", color="#1d3557", lw=0.8, alpha=0.8),
                 zorder=6.2,
             )
 
@@ -1107,7 +1205,13 @@ class SynchroJumpApp:
         self.kinematics_axis.grid(alpha=0.25)
         position_handles, position_labels = self.kinematics_axis.get_legend_handles_labels()
         velocity_handles, velocity_labels = self.kinematics_velocity_axis.get_legend_handles_labels()
-        self.kinematics_axis.legend(position_handles + velocity_handles, position_labels + velocity_labels, loc="best")
+        self.kinematics_axis.legend(
+            position_handles + velocity_handles,
+            position_labels + velocity_labels,
+            loc="upper left",
+            fontsize=9,
+            framealpha=0.9,
+        )
 
     def _draw_joint_figure(self) -> None:
         """Draw the knee/hip angles and torques underneath the runtime kinematics."""
@@ -1162,7 +1266,6 @@ class SynchroJumpApp:
                 linewidth=1.0,
                 linestyle=":",
                 alpha=0.8,
-                label=f"Limite genou ±{torque_limits['Genou']:.0f} Nm",
             )
             self.joint_torque_axis.axhline(
                 -torque_limits["Genou"],
@@ -1177,7 +1280,6 @@ class SynchroJumpApp:
                 linewidth=1.0,
                 linestyle=":",
                 alpha=0.8,
-                label=f"Limite hanche ±{torque_limits['Hanche']:.0f} Nm",
             )
             self.joint_torque_axis.axhline(
                 -torque_limits["Hanche"],
@@ -1185,6 +1287,16 @@ class SynchroJumpApp:
                 linewidth=1.0,
                 linestyle=":",
                 alpha=0.8,
+            )
+            self.joint_angle_axis.text(
+                0.02,
+                0.98,
+                f"Limites couples:\nGenou ±{torque_limits['Genou']:.0f} Nm\nHanche ±{torque_limits['Hanche']:.0f} Nm",
+                transform=self.joint_angle_axis.transAxes,
+                ha="left",
+                va="top",
+                fontsize=8,
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#e5e7eb", alpha=0.85),
             )
 
         self.joint_angle_axis.axvline(
@@ -1196,19 +1308,25 @@ class SynchroJumpApp:
         self.joint_angle_axis.set_xlabel("Temps (s)")
         self.joint_angle_axis.set_ylabel("Angle (deg)")
         self.joint_torque_axis.set_ylabel("Couple (Nm)")
-        self.joint_angle_axis.set_title("Angles et couples articulaires")
+        self.joint_angle_axis.set_title("Angles et couples articulaires", pad=4)
         self.joint_angle_axis.grid(alpha=0.25)
 
         angle_handles, angle_labels = self.joint_angle_axis.get_legend_handles_labels()
         torque_handles, torque_labels = self.joint_torque_axis.get_legend_handles_labels()
-        self.joint_angle_axis.legend(angle_handles + torque_handles, angle_labels + torque_labels, loc="best")
+        self.joint_angle_axis.legend(
+            angle_handles + torque_handles,
+            angle_labels + torque_labels,
+            loc="lower left",
+            fontsize=9,
+            framealpha=0.9,
+        )
 
-    def _pose_points_from_q(
+    def _analytic_pose_points_from_q(
         self,
         morphology: AthleteMorphology,
         q_values: tuple[float, float, float, float, float],
     ) -> dict[str, tuple[float, float]]:
-        """Compute the displayed joint positions for one generalized state."""
+        """Compute one analytic fallback pose when the true `BiorbdModel` is unavailable."""
 
         lengths = morphology.segment_lengths
         if len(q_values) == 5:
@@ -1220,9 +1338,9 @@ class SynchroJumpApp:
             raise ValueError("The displayed jumper pose expects 3 or 5 generalized coordinates")
 
         def advance(origin: tuple[float, float], angle: float, length: float) -> tuple[float, float]:
-            return (origin[0] + length * math.cos(angle), origin[1] + length * math.sin(angle))
+            return (origin[0] + length * math.sin(angle), origin[1] + length * math.cos(angle))
 
-        leg_angle = math.pi / 2.0 + q_root_rot
+        leg_angle = q_root_rot
         thigh_angle = leg_angle + q_knee
         trunk_angle = thigh_angle + q_hip
 

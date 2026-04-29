@@ -59,6 +59,7 @@ class VerticalJumpOcpSettings:
     angular_momentum_bound_n_s: float = 5.0
     torque_regularization_excluded_tail_nodes: int = 3
     torque_regularization_tail_weight: float = 0.2
+    final_extension_mayer_weight: float = 5e-3
     final_time_upper_bound_s: float = 2.0
     final_time_lower_bound_s: float = 0.2
     n_shooting: int = 100
@@ -97,6 +98,8 @@ class VerticalJumpOcpSettings:
             raise ValueError("torque_regularization_excluded_tail_nodes must stay below n_shooting")
         if not (0.0 <= self.torque_regularization_tail_weight <= 1.0):
             raise ValueError("torque_regularization_tail_weight must stay within [0, 1]")
+        if self.final_extension_mayer_weight < 0.0:
+            raise ValueError("final_extension_mayer_weight must stay non-negative")
         if self.final_time_lower_bound_s <= 0.0:
             raise ValueError("final_time_lower_bound_s must be strictly positive")
         if self.final_time_lower_bound_s >= self.final_time_upper_bound_s:

@@ -274,17 +274,16 @@ def test_segment_com_positions_delegate_to_the_display_model() -> None:
     """The GUI helper should expose the segmental CoMs of the displayed model."""
 
     app = object.__new__(SynchroJumpApp)
-    app.current_model_definition = lambda: type(
-        "_ModelDefinition",
-        (),
+    app.current_morphology = lambda: None
+    app._display_pose_and_com_from_q = lambda *_args, **_kwargs: (
+        {},
+        (0.0, 0.0),
         {
-            "segment_center_of_mass_positions": lambda self, _q: {
-                "leg_foot": (0.0, 0.3),
-                "thigh": (0.1, 0.8),
-                "trunk": (0.2, 1.2),
-            }
+            "leg_foot": (0.0, 0.3),
+            "thigh": (0.1, 0.8),
+            "trunk": (0.2, 1.2),
         },
-    )()
+    )
 
     segment_coms = app._segment_com_positions((0.0, 0.0, 0.0))
 
