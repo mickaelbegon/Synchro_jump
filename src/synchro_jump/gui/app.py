@@ -834,14 +834,13 @@ class SynchroJumpApp:
         self.pose_axis.clear()
         if avatar_available:
             self._draw_raster_avatar(self.pose_axis, initial_points, alpha=0.22)
-            self.pose_axis.plot(
-                [],
-                [],
+            self._draw_kinematic_chain_overlay(
+                self.pose_axis,
+                initial_points,
                 color="#6b6b6b",
-                linewidth=3.0,
-                linestyle="--",
-                alpha=0.85,
                 label="Posture initiale",
+                linestyle="--",
+                alpha=0.65,
             )
         else:
             self._draw_stick_figure(
@@ -919,6 +918,15 @@ class SynchroJumpApp:
                     label="Frame animee",
                     linestyle="-",
                     alpha=1.0,
+                )
+            else:
+                self._draw_kinematic_chain_overlay(
+                    self.pose_axis,
+                    animated_points,
+                    color="#1d3557",
+                    label="Chaine cinematique",
+                    linestyle="-",
+                    alpha=0.9,
                 )
             self._draw_center_of_mass_markers(
                 self.pose_axis,
@@ -1006,6 +1014,41 @@ class SynchroJumpApp:
             linestyle=linestyle,
             alpha=alpha,
             label=label,
+        )
+
+    def _draw_kinematic_chain_overlay(
+        self,
+        axis,
+        points: dict[str, tuple[float, float]],
+        *,
+        color: str,
+        label: str,
+        linestyle: str,
+        alpha: float,
+    ) -> None:
+        """Draw a light line overlay of the kinematic chain on top of the avatar."""
+
+        chain_x = [points["foot"][0], points["knee"][0], points["hip"][0], points["head"][0]]
+        chain_y = [points["foot"][1], points["knee"][1], points["hip"][1], points["head"][1]]
+        axis.plot(
+            chain_x,
+            chain_y,
+            color=color,
+            linewidth=1.8,
+            linestyle=linestyle,
+            alpha=alpha,
+            zorder=6.6,
+            label=label,
+        )
+        axis.scatter(
+            chain_x,
+            chain_y,
+            color=color,
+            edgecolors="white",
+            linewidths=0.6,
+            s=22,
+            alpha=alpha,
+            zorder=6.7,
         )
 
     def _avatar_status_line(self) -> str:
