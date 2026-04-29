@@ -170,29 +170,29 @@ class PlanarJumperModelDefinition:
 
         lengths = self.morphology.segment_lengths
         q_root_x, q_root_z, q_root_rot, q_knee, q_hip = self._unpack_q_values(q_values)
-        leg_angle = math.pi / 2.0 + q_root_rot
+        leg_angle = q_root_rot
         thigh_angle = leg_angle + q_knee
         trunk_angle = thigh_angle + q_hip
 
         leg_com = (
-            q_root_x + 0.55 * lengths.leg_foot * math.cos(leg_angle),
-            q_root_z + 0.55 * lengths.leg_foot * math.sin(leg_angle),
+            q_root_x + 0.55 * lengths.leg_foot * math.sin(leg_angle),
+            q_root_z + 0.55 * lengths.leg_foot * math.cos(leg_angle),
         )
         knee = (
-            q_root_x + lengths.leg_foot * math.cos(leg_angle),
-            q_root_z + lengths.leg_foot * math.sin(leg_angle),
+            q_root_x + lengths.leg_foot * math.sin(leg_angle),
+            q_root_z + lengths.leg_foot * math.cos(leg_angle),
         )
         thigh_com = (
-            knee[0] + 0.45 * lengths.thigh * math.cos(thigh_angle),
-            knee[1] + 0.45 * lengths.thigh * math.sin(thigh_angle),
+            knee[0] + 0.45 * lengths.thigh * math.sin(thigh_angle),
+            knee[1] + 0.45 * lengths.thigh * math.cos(thigh_angle),
         )
         hip = (
-            knee[0] + lengths.thigh * math.cos(thigh_angle),
-            knee[1] + lengths.thigh * math.sin(thigh_angle),
+            knee[0] + lengths.thigh * math.sin(thigh_angle),
+            knee[1] + lengths.thigh * math.cos(thigh_angle),
         )
         trunk_com = (
-            hip[0] + 0.5 * lengths.trunk * math.cos(trunk_angle),
-            hip[1] + 0.5 * lengths.trunk * math.sin(trunk_angle),
+            hip[0] + 0.5 * lengths.trunk * math.sin(trunk_angle),
+            hip[1] + 0.5 * lengths.trunk * math.cos(trunk_angle),
         )
         return {
             "leg_foot": leg_com,
@@ -211,20 +211,20 @@ class PlanarJumperModelDefinition:
         total_mass = leg_mass + thigh_mass + trunk_mass
 
         _, _, q_root_rot, q_knee, q_hip = self._unpack_q_values(q_values)
-        leg_angle = math.pi / 2.0 + q_root_rot
+        leg_angle = q_root_rot
         thigh_angle = leg_angle + q_knee
         trunk_angle = thigh_angle + q_hip
 
-        d_leg_d_root = -0.55 * lengths.leg_foot * math.sin(leg_angle)
-        d_thigh_d_root = -lengths.leg_foot * math.sin(leg_angle) - 0.45 * lengths.thigh * math.sin(thigh_angle)
-        d_thigh_d_knee = -0.45 * lengths.thigh * math.sin(thigh_angle)
+        d_leg_d_root = 0.55 * lengths.leg_foot * math.cos(leg_angle)
+        d_thigh_d_root = lengths.leg_foot * math.cos(leg_angle) + 0.45 * lengths.thigh * math.cos(thigh_angle)
+        d_thigh_d_knee = 0.45 * lengths.thigh * math.cos(thigh_angle)
         d_trunk_d_root = (
-            -lengths.leg_foot * math.sin(leg_angle)
-            - lengths.thigh * math.sin(thigh_angle)
-            - 0.5 * lengths.trunk * math.sin(trunk_angle)
+            lengths.leg_foot * math.cos(leg_angle)
+            + lengths.thigh * math.cos(thigh_angle)
+            + 0.5 * lengths.trunk * math.cos(trunk_angle)
         )
-        d_trunk_d_knee = -lengths.thigh * math.sin(thigh_angle) - 0.5 * lengths.trunk * math.sin(trunk_angle)
-        d_trunk_d_hip = -0.5 * lengths.trunk * math.sin(trunk_angle)
+        d_trunk_d_knee = lengths.thigh * math.cos(thigh_angle) + 0.5 * lengths.trunk * math.cos(trunk_angle)
+        d_trunk_d_hip = 0.5 * lengths.trunk * math.cos(trunk_angle)
 
         jacobian_root = (leg_mass * d_leg_d_root + thigh_mass * d_thigh_d_root + trunk_mass * d_trunk_d_root) / total_mass
         jacobian_knee = (thigh_mass * d_thigh_d_knee + trunk_mass * d_trunk_d_knee) / total_mass
