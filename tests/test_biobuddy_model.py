@@ -83,3 +83,18 @@ def test_segment_center_of_mass_positions_stay_on_the_expected_segments() -> Non
     assert segment_coms["leg_foot"][1] < lengths.leg_foot + 1e-8
     assert segment_coms["thigh"][1] > 0.0
     assert segment_coms["trunk"][1] > segment_coms["thigh"][1]
+
+
+def test_thigh_center_of_mass_sits_closer_to_hip_than_knee() -> None:
+    """The thigh CoM should lie on the proximal half of the segment."""
+
+    model_definition = PlanarJumperModelDefinition(AthleteMorphology(height_m=1.60, mass_kg=50.0))
+    lengths = model_definition.morphology.segment_lengths
+
+    thigh_offset_from_knee = 0.55 * lengths.thigh
+    thigh_offset_from_hip = lengths.thigh - thigh_offset_from_knee
+
+    assert lengths.thigh == pytest.approx(0.392)
+    assert thigh_offset_from_knee == pytest.approx(0.2156)
+    assert thigh_offset_from_hip == pytest.approx(0.1764)
+    assert thigh_offset_from_hip < thigh_offset_from_knee

@@ -1157,12 +1157,18 @@ class VerticalJumpBioptimOcpBuilder:
             1e-6 * torque_regularization_selector,
             interpolation=InterpolationType.EACH_FRAME,
         )
-        objective_functions.add(_negative_final_com_height, custom_type=ObjectiveFcn.Mayer, node=Node.END)
+        objective_functions.add(
+            _negative_final_com_height,
+            custom_type=ObjectiveFcn.Mayer,
+            node=Node.END,
+            weight=self.settings.final_com_height_mayer_weight,
+        )
         objective_functions.add(
             _negative_predicted_ballistic_gain,
             custom_type=ObjectiveFcn.Mayer,
             node=Node.END,
             gravity=9.81,
+            weight=self.settings.final_vertical_velocity_mayer_weight,
         )
         objective_functions.add(
             _final_com_anteroposterior_velocity_squared,

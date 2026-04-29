@@ -183,8 +183,8 @@ class PlanarJumperModelDefinition:
             q_root_z + lengths.leg_foot * math.cos(leg_angle),
         )
         thigh_com = (
-            knee[0] + 0.45 * lengths.thigh * math.sin(thigh_angle),
-            knee[1] + 0.45 * lengths.thigh * math.cos(thigh_angle),
+            knee[0] + 0.55 * lengths.thigh * math.sin(thigh_angle),
+            knee[1] + 0.55 * lengths.thigh * math.cos(thigh_angle),
         )
         hip = (
             knee[0] + lengths.thigh * math.sin(thigh_angle),
@@ -216,8 +216,8 @@ class PlanarJumperModelDefinition:
         trunk_angle = thigh_angle + q_hip
 
         d_leg_d_root = 0.55 * lengths.leg_foot * math.cos(leg_angle)
-        d_thigh_d_root = lengths.leg_foot * math.cos(leg_angle) + 0.45 * lengths.thigh * math.cos(thigh_angle)
-        d_thigh_d_knee = 0.45 * lengths.thigh * math.cos(thigh_angle)
+        d_thigh_d_root = lengths.leg_foot * math.cos(leg_angle) + 0.55 * lengths.thigh * math.cos(thigh_angle)
+        d_thigh_d_knee = 0.55 * lengths.thigh * math.cos(thigh_angle)
         d_trunk_d_root = (
             lengths.leg_foot * math.cos(leg_angle)
             + lengths.thigh * math.cos(thigh_angle)
@@ -309,7 +309,7 @@ class PlanarJumperModelDefinition:
                     rotations="y",
                     ranges_q=((-3.141593, 3.141593),),
                     mass=thigh_mass,
-                    center_of_mass=(0.0, 0.0, 0.45 * lengths.thigh),
+                    center_of_mass=(0.0, 0.0, 0.55 * lengths.thigh),
                     inertia=thigh_inertia,
                 ),
                 _segment_block(
@@ -413,7 +413,7 @@ class PlanarJumperModelDefinition:
             q_ranges=q_ranges((-math.pi, math.pi),),
             inertia_parameters=InertiaParametersReal(
                 mass=thigh_mass,
-                center_of_mass=np.array([0.0, 0.0, 0.45 * lengths.thigh]),
+                center_of_mass=np.array([0.0, 0.0, 0.55 * lengths.thigh]),
                 inertia=np.diag(_rod_inertia(thigh_mass, lengths.thigh)),
             ),
         )

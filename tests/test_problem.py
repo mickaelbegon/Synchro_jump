@@ -129,3 +129,13 @@ def test_settings_reject_torque_regularization_tail_outside_valid_range() -> Non
 
     with pytest.raises(ValueError, match="torque_regularization_tail_weight"):
         VerticalJumpOcpSettings(athlete_mass_kg=50.0, torque_regularization_tail_weight=1.1)
+
+
+def test_settings_reject_negative_final_mayer_weights() -> None:
+    """The terminal height and vertical-speed weights should remain non-negative."""
+
+    with pytest.raises(ValueError, match="final_com_height_mayer_weight"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, final_com_height_mayer_weight=-1.0)
+
+    with pytest.raises(ValueError, match="final_vertical_velocity_mayer_weight"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, final_vertical_velocity_mayer_weight=-1.0)

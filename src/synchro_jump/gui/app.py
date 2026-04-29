@@ -482,8 +482,8 @@ class SynchroJumpApp:
                         marker_points["foot"][1] + 0.55 * (marker_points["knee"][1] - marker_points["foot"][1]),
                     ),
                     "thigh": (
-                        marker_points["knee"][0] + 0.45 * (marker_points["hip"][0] - marker_points["knee"][0]),
-                        marker_points["knee"][1] + 0.45 * (marker_points["hip"][1] - marker_points["knee"][1]),
+                        marker_points["knee"][0] + 0.55 * (marker_points["hip"][0] - marker_points["knee"][0]),
+                        marker_points["knee"][1] + 0.55 * (marker_points["hip"][1] - marker_points["knee"][1]),
                     ),
                     "trunk": (
                         marker_points["hip"][0] + 0.5 * (marker_points["head"][0] - marker_points["hip"][0]),
