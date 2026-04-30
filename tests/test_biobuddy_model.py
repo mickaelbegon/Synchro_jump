@@ -37,6 +37,17 @@ def test_biomod_text_limits_knee_range_to_avoid_hyperextension() -> None:
     assert "\t\t0.000000\t2.792527\n" in biomod_text
 
 
+def test_biomod_text_places_child_segments_at_parent_endpoints() -> None:
+    """The serialized `.bioMod` should translate thigh and trunk along the parent z-axis."""
+
+    biomod_text = PlanarJumperModelDefinition(AthleteMorphology(height_m=1.60, mass_kg=50.0)).to_biomod_text()
+
+    assert "segment\tthigh" in biomod_text
+    assert "\t\t0.000000\t0.000000\t1.000000\t0.464000\n" in biomod_text
+    assert "segment\ttrunk" in biomod_text
+    assert "\t\t0.000000\t0.000000\t1.000000\t0.392000\n" in biomod_text
+
+
 def test_initial_configuration_matches_temporary_manual_pose() -> None:
     """The temporary initial posture should use the manually imposed rotations."""
 

@@ -341,16 +341,15 @@ class PlanarJumperModelDefinition:
     def write_biomod(self, filepath: str | Path) -> Path:
         """Write the reduced model to disk.
 
-        The method prefers `biobuddy` when available and falls back to a plain
-        text serializer otherwise.
+        `biobuddy` currently exports child-segment `RT` blocks with a zero
+        translation in this project setup, which breaks the intended parent-to-
+        child placement. We therefore serialize the `.bioMod` text directly so
+        the on-disk model matches the in-memory kinematic definition exactly.
         """
 
         output_path = Path(filepath)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            self._write_biomod_with_biobuddy(output_path)
-        except ModuleNotFoundError:
-            output_path.write_text(self.to_biomod_text(), encoding="utf-8")
+        output_path.write_text(self.to_biomod_text(), encoding="utf-8")
         return output_path
 
     def _write_biomod_with_biobuddy(self, filepath: Path) -> None:
