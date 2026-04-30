@@ -1124,6 +1124,28 @@ class SynchroJumpApp:
                 arrowprops=dict(arrowstyle="->", color="#2a9d8f", lw=1.0, alpha=alpha),
                 zorder=7.1,
             )
+            anterior_point = np.array(origin, dtype=float) + 0.55 * frame_length * local_x
+            posterior_point = np.array(origin, dtype=float) - 0.55 * frame_length * local_x
+            axis.scatter(
+                [anterior_point[0]],
+                [anterior_point[1]],
+                color="#e63946",
+                edgecolors="white",
+                linewidths=0.5,
+                s=18,
+                alpha=alpha,
+                zorder=7.15,
+            )
+            axis.scatter(
+                [posterior_point[0]],
+                [posterior_point[1]],
+                color="#457b9d",
+                edgecolors="white",
+                linewidths=0.5,
+                s=18,
+                alpha=alpha,
+                zorder=7.15,
+            )
             axis.text(
                 origin[0] + 0.01,
                 origin[1] + 0.01,
@@ -1133,6 +1155,17 @@ class SynchroJumpApp:
                 alpha=min(1.0, alpha),
                 zorder=7.2,
             )
+        axis.text(
+            0.02,
+            0.96,
+            "Rouge=avant | Bleu=arriere",
+            transform=axis.transAxes,
+            color="#495057",
+            fontsize=7,
+            alpha=min(1.0, alpha),
+            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="#dee2e6", alpha=0.75),
+            zorder=7.3,
+        )
 
     def _avatar_status_line(self) -> str:
         """Return one concise status line for raster avatar availability."""

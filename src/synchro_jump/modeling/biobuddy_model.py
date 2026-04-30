@@ -120,6 +120,24 @@ class PlanarJumperModelDefinition:
         return (0.12 * total, 0.24 * total, 0.64 * total)
 
     @property
+    def ankle_equivalent_rotation_bounds_rad(self) -> tuple[float, float]:
+        """Return admissible ankle-equivalent rotations."""
+
+        return (-math.pi, math.pi)
+
+    @property
+    def knee_rotation_bounds_rad(self) -> tuple[float, float]:
+        """Return admissible knee rotations without hyper-extension."""
+
+        return (0.0, math.radians(160.0))
+
+    @property
+    def hip_rotation_bounds_rad(self) -> tuple[float, float]:
+        """Return admissible hip rotations around the crouched working range."""
+
+        return (-math.radians(150.0), math.radians(60.0))
+
+    @property
     def crouched_joint_configuration_rad(self) -> tuple[float, float, float, float, float]:
         """Return the crouched posture before CoM alignment over the ankle.
 
@@ -298,10 +316,10 @@ class PlanarJumperModelDefinition:
                         (
                             (-1.5, 1.5),
                             (-0.2, 2.2),
-                            (-3.141593, 3.141593),
+                            self.ankle_equivalent_rotation_bounds_rad,
                         )
                         if self.floating_base
-                        else ((-3.141593, 3.141593),)
+                        else (self.ankle_equivalent_rotation_bounds_rad,)
                     ),
                     mass=leg_mass,
                     center_of_mass=(0.0, 0.0, 0.55 * lengths.leg_foot),
@@ -312,7 +330,7 @@ class PlanarJumperModelDefinition:
                     "leg_foot",
                     (0.0, 0.0, lengths.leg_foot),
                     rotations="y",
-                    ranges_q=((-3.141593, 3.141593),),
+                    ranges_q=(self.knee_rotation_bounds_rad,),
                     mass=thigh_mass,
                     center_of_mass=(0.0, 0.0, 0.55 * lengths.thigh),
                     inertia=thigh_inertia,
@@ -322,7 +340,7 @@ class PlanarJumperModelDefinition:
                     "thigh",
                     (0.0, 0.0, lengths.thigh),
                     rotations="y",
-                    ranges_q=((-3.141593, 3.141593),),
+                    ranges_q=(self.hip_rotation_bounds_rad,),
                     mass=trunk_mass,
                     center_of_mass=(0.0, 0.0, 0.5 * lengths.trunk),
                     inertia=trunk_inertia,
@@ -394,9 +412,9 @@ class PlanarJumperModelDefinition:
             translations=Translations.XZ if self.floating_base else None,
             rotations=Rotations.Y,
             q_ranges=(
-                q_ranges((-1.5, 1.5), (-0.2, 2.2), (-math.pi, math.pi))
+                q_ranges((-1.5, 1.5), (-0.2, 2.2), self.ankle_equivalent_rotation_bounds_rad)
                 if self.floating_base
-                else q_ranges((-math.pi, math.pi))
+                else q_ranges(self.ankle_equivalent_rotation_bounds_rad)
             ),
             inertia_parameters=InertiaParametersReal(
                 mass=leg_mass,
@@ -415,7 +433,7 @@ class PlanarJumperModelDefinition:
             parent_name="leg_foot",
             segment_coordinate_system=scs((0.0, 0.0, lengths.leg_foot)),
             rotations=Rotations.Y,
-            q_ranges=q_ranges((-math.pi, math.pi),),
+            q_ranges=q_ranges(self.knee_rotation_bounds_rad),
             inertia_parameters=InertiaParametersReal(
                 mass=thigh_mass,
                 center_of_mass=np.array([0.0, 0.0, 0.55 * lengths.thigh]),
@@ -430,7 +448,7 @@ class PlanarJumperModelDefinition:
             parent_name="thigh",
             segment_coordinate_system=scs((0.0, 0.0, lengths.thigh)),
             rotations=Rotations.Y,
-            q_ranges=q_ranges((-math.pi, math.pi),),
+            q_ranges=q_ranges(self.hip_rotation_bounds_rad),
             inertia_parameters=InertiaParametersReal(
                 mass=trunk_mass,
                 center_of_mass=np.array([0.0, 0.0, 0.5 * lengths.trunk]),

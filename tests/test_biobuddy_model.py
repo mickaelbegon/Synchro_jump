@@ -29,6 +29,14 @@ def test_biomod_text_contains_segments_and_contact() -> None:
     assert "contact\tplatform_contact" in biomod_text
 
 
+def test_biomod_text_limits_knee_range_to_avoid_hyperextension() -> None:
+    """The serialized knee range should keep the leg-thigh joint away from hyper-extension."""
+
+    biomod_text = PlanarJumperModelDefinition().to_biomod_text()
+
+    assert "\t\t0.000000\t2.792527\n" in biomod_text
+
+
 def test_initial_configuration_aligns_center_of_mass_over_ankle() -> None:
     """The initial posture should place the CoM above the ankle contact."""
 
@@ -98,3 +106,12 @@ def test_thigh_center_of_mass_sits_closer_to_hip_than_knee() -> None:
     assert thigh_offset_from_knee == pytest.approx(0.2156)
     assert thigh_offset_from_hip == pytest.approx(0.1764)
     assert thigh_offset_from_hip < thigh_offset_from_knee
+
+
+def test_joint_range_properties_expose_non_hyperextending_knee_bounds() -> None:
+    """The model should expose consistent joint bounds for serialization and export."""
+
+    model_definition = PlanarJumperModelDefinition(AthleteMorphology(height_m=1.60, mass_kg=50.0))
+
+    assert model_definition.knee_rotation_bounds_rad == pytest.approx((0.0, math.radians(160.0)))
+    assert model_definition.hip_rotation_bounds_rad == pytest.approx((math.radians(-150.0), math.radians(60.0)))
