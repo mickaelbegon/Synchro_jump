@@ -116,7 +116,7 @@ def test_settings_reject_non_positive_angular_momentum_bound() -> None:
 
 
 def test_settings_reject_torque_regularization_tail_outside_valid_range() -> None:
-    """The excluded torque-regularization tail should stay within the shooting horizon."""
+    """The torque-regularization tail scaling should stay physically meaningful."""
 
     with pytest.raises(ValueError, match="torque_regularization_excluded_tail_nodes"):
         VerticalJumpOcpSettings(athlete_mass_kg=50.0, torque_regularization_excluded_tail_nodes=-1)
@@ -127,8 +127,12 @@ def test_settings_reject_torque_regularization_tail_outside_valid_range() -> Non
     with pytest.raises(ValueError, match="torque_regularization_tail_weight"):
         VerticalJumpOcpSettings(athlete_mass_kg=50.0, torque_regularization_tail_weight=-0.1)
 
-    with pytest.raises(ValueError, match="torque_regularization_tail_weight"):
-        VerticalJumpOcpSettings(athlete_mass_kg=50.0, torque_regularization_tail_weight=1.1)
+
+def test_settings_reject_negative_time_regularization_weight() -> None:
+    """The time-regularization weight should remain non-negative."""
+
+    with pytest.raises(ValueError, match="minimize_time_mayer_weight"):
+        VerticalJumpOcpSettings(athlete_mass_kg=50.0, minimize_time_mayer_weight=-1.0)
 
 
 def test_settings_reject_negative_final_mayer_weights() -> None:

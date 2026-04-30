@@ -187,7 +187,7 @@ def _shooting_weight_with_excluded_tail(
     excluded_tail_nodes: int,
     tail_weight: float = 0.0,
 ):
-    """Return one per-shooting-node weight vector with a softened tail."""
+    """Return one per-shooting-node weight vector with custom tail scaling."""
 
     if n_shooting <= 0:
         raise ValueError("n_shooting must be strictly positive")
@@ -195,8 +195,8 @@ def _shooting_weight_with_excluded_tail(
         raise ValueError("excluded_tail_nodes must stay non-negative")
     if excluded_tail_nodes >= n_shooting:
         raise ValueError("excluded_tail_nodes must stay below n_shooting")
-    if not (0.0 <= tail_weight <= 1.0):
-        raise ValueError("tail_weight must stay within [0, 1]")
+    if tail_weight < 0.0:
+        raise ValueError("tail_weight must stay non-negative")
 
     weights = np.ones((n_shooting,), dtype=float)
     if excluded_tail_nodes:
@@ -1189,6 +1189,13 @@ class VerticalJumpBioptimOcpBuilder:
             weight=self.settings.final_extension_mayer_weight,
         )
         objective_functions.add(
+            ObjectiveFcn.Mayer.MINIMIZE_TIME,
+            node=Node.END,
+            weight=self.settings.minimize_time_mayer_weight,
+            min_bound=self.settings.final_time_lower_bound_s,
+            max_bound=self.settings.final_time_upper_bound_s,
+        )
+        objective_functions.add(
             ObjectiveFcn.Lagrange.MINIMIZE_CONTROL,
             key="tau_joints",
             weight=torque_regularization_weight,
@@ -1268,13 +1275,6 @@ class VerticalJumpBioptimOcpBuilder:
                 contact_stiffness_n_per_m=self.settings.contact_stiffness_n_per_m,
                 contact_damping_n_s_per_m=self.settings.contact_damping_n_s_per_m,
             )
-        constraints.add(
-            ConstraintFcn.TIME_CONSTRAINT,
-            node=Node.END,
-            min_bound=self.settings.final_time_lower_bound_s,
-            max_bound=self.settings.final_time_upper_bound_s,
-            phase=0,
-        )
         constraints.add(
             _sagittal_angular_momentum,
             node=Node.ALL_SHOOTING,
