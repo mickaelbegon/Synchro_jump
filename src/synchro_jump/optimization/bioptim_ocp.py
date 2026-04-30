@@ -1074,27 +1074,11 @@ class VerticalJumpBioptimOcpBuilder:
         tolerance: float = 1e-10,
         max_iterations: int = 25,
     ) -> tuple[float, ...]:
-        """Return one initial posture aligned on the true exported-model CoM.
+        """Return the temporary manually imposed initial posture."""
 
-        The knee and hip stay fixed at the requested flexion angle; only the
-        ankle-equivalent rotation is corrected so the CoM projection reaches the
-        foot support point.
-        """
-
-        from bioptim import BiorbdModel
-
-        model_filepath = Path(model_path) if model_path is not None else self.export_model(Path.cwd() / "generated")
+        _ = (model_path, tolerance, max_iterations)
         model_definition = _model_definition_from_settings(self.settings)
-        initial_q = model_definition.crouched_joint_configuration_rad
-        ankle_rotation_index = 2 if _floating_base_for_contact_model(self.settings.contact_model) else 0
-        aligned_q = _align_configuration_to_zero_com_x(
-            BiorbdModel(str(model_filepath)),
-            initial_q,
-            optimized_dof_indices=(ankle_rotation_index,),
-            tolerance=tolerance,
-            max_iterations=max_iterations,
-        )
-        return tuple(float(value) for value in aligned_q)
+        return tuple(float(value) for value in model_definition.crouched_joint_configuration_rad)
 
     def build_ocp(
         self,

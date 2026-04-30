@@ -139,17 +139,20 @@ class PlanarJumperModelDefinition:
 
     @property
     def crouched_joint_configuration_rad(self) -> tuple[float, float, float, float, float]:
-        """Return the crouched posture before CoM alignment over the ankle.
+        """Return the temporary manually imposed initial posture.
 
-        The requested initial generalized coordinates are:
-        - knee:  +pi/2
-        - hip:   -pi/2
+        The current temporary generalized coordinates are:
+        - ankle-equivalent/root rotation: +30 deg
+        - knee: -90 deg
+        - hip: +90 deg
         """
 
-        flexion = math.radians(self.morphology.initial_joint_flexion_deg)
+        root_rotation = math.radians(30.0)
+        knee = -math.pi / 2.0
+        hip = math.pi / 2.0
         if self.floating_base:
-            return (0.0, 0.0, 0.0, flexion, -flexion)
-        return (0.0, flexion, -flexion)
+            return (0.0, 0.0, root_rotation, knee, hip)
+        return (root_rotation, knee, hip)
 
     def _unpack_q_values(
         self,
@@ -260,32 +263,10 @@ class PlanarJumperModelDefinition:
         tolerance: float = 1e-10,
         max_iterations: int = 25,
     ) -> tuple[float, ...]:
-        """Return one crouched posture with the CoM aligned over the ankle.
+        """Return the temporary manually imposed initial posture unchanged."""
 
-        The reduced model has no explicit ankle joint. We therefore use the root
-        rotation of the distal segment as one ankle-equivalent rotation and
-        converge the horizontal CoM offset toward zero with one Jacobian
-        pseudo-inverse update.
-        """
-
-        q_values = list(self.crouched_joint_configuration_rad)
-        for _ in range(max_iterations):
-            center_of_mass_x, _ = self.center_of_mass_position(tuple(q_values))
-            ankle_x = q_values[0] if self.floating_base else 0.0
-            horizontal_error = center_of_mass_x - ankle_x
-            if abs(horizontal_error) <= tolerance:
-                break
-
-            jacobian_root, _, _ = self.center_of_mass_horizontal_jacobian(tuple(q_values))
-            jacobian_norm_sq = jacobian_root * jacobian_root
-            if jacobian_norm_sq <= 1e-12:
-                break
-
-            pseudo_inverse = jacobian_root / jacobian_norm_sq
-            root_rotation_index = 2 if self.floating_base else 0
-            q_values[root_rotation_index] -= pseudo_inverse * horizontal_error
-
-        return tuple(q_values)
+        _ = (tolerance, max_iterations)
+        return self.crouched_joint_configuration_rad
 
     @property
     def initial_joint_configuration_rad(self) -> tuple[float, ...]:

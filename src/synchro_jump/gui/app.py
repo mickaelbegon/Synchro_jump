@@ -34,6 +34,7 @@ class SynchroJumpApp:
     default_solve_iterations = 1000
     max_solve_iterations = 1000
     animation_delay_ms = 80
+    avatar_enabled = False
     avatar_flip_horizontal = False
     contact_model_labels = {
         CONTACT_MODEL_RIGID_UNILATERAL: "Rigide unilateral",
@@ -829,7 +830,7 @@ class SynchroJumpApp:
 
         initial_q = self.current_initial_q()
         initial_points, initial_com, initial_segment_coms = self._display_pose_and_com_from_q(morphology, initial_q)
-        avatar_available, _ = avatar_rendering_diagnostics()
+        avatar_available = self.avatar_enabled and avatar_rendering_diagnostics()[0]
 
         self.pose_axis.clear()
         if avatar_available:
@@ -1092,7 +1093,7 @@ class SynchroJumpApp:
             ("cuisse", points["knee"], points["hip"]),
             ("tronc", points["hip"], points["head"]),
         )
-        frame_length = 0.08
+        frame_length = 0.24
 
         for segment_name, origin, distal_to_proximal_end in segment_definitions:
             segment_vector = np.array(
@@ -1132,7 +1133,7 @@ class SynchroJumpApp:
                 color="#e63946",
                 edgecolors="white",
                 linewidths=0.5,
-                s=18,
+                s=54,
                 alpha=alpha,
                 zorder=7.15,
             )
@@ -1142,7 +1143,7 @@ class SynchroJumpApp:
                 color="#457b9d",
                 edgecolors="white",
                 linewidths=0.5,
-                s=18,
+                s=54,
                 alpha=alpha,
                 zorder=7.15,
             )
@@ -1170,6 +1171,8 @@ class SynchroJumpApp:
     def _avatar_status_line(self) -> str:
         """Return one concise status line for raster avatar availability."""
 
+        if not self.avatar_enabled:
+            return "avatar raster desactive temporairement, rendu filaire actif."
         available, message = avatar_rendering_diagnostics()
         return message if available else f"indisponible, {message}"
 
@@ -1182,6 +1185,8 @@ class SynchroJumpApp:
     ) -> bool:
         """Draw the animated avatar with raster segments when the assets are available."""
 
+        if not self.avatar_enabled:
+            return False
         available, _ = avatar_rendering_diagnostics()
         if not available:
             return False

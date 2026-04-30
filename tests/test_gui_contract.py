@@ -228,6 +228,7 @@ def test_avatar_status_line_reports_unavailable_reason(monkeypatch) -> None:
     """The GUI should expose a readable raster-avatar diagnostic line."""
 
     app = object.__new__(SynchroJumpApp)
+    app.avatar_enabled = True
     monkeypatch.setattr(
         app_module,
         "avatar_rendering_diagnostics",
@@ -241,6 +242,7 @@ def test_draw_raster_avatar_forwards_alpha_to_segment_renderer(monkeypatch) -> N
     """The raster avatar helper should forward one shared alpha to all sprites."""
 
     app = object.__new__(SynchroJumpApp)
+    app.avatar_enabled = True
     recorded_alpha = []
     recorded_flip = []
 
@@ -268,6 +270,15 @@ def test_draw_raster_avatar_forwards_alpha_to_segment_renderer(monkeypatch) -> N
     assert ok is True
     assert recorded_alpha == [0.25, 0.25, 0.25]
     assert recorded_flip == [True, True, True]
+
+
+def test_avatar_status_line_reports_temporary_disable_by_default() -> None:
+    """The GUI should clearly announce when raster sprites are disabled."""
+
+    app = object.__new__(SynchroJumpApp)
+    app.avatar_enabled = False
+
+    assert "desactive temporairement" in app._avatar_status_line()
 
 
 def test_segment_com_positions_delegate_to_the_display_model() -> None:
