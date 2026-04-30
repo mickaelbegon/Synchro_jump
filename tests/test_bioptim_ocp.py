@@ -253,11 +253,13 @@ def test_shooting_weight_with_excluded_tail_softens_the_last_three_nodes() -> No
     assert np.allclose(weights[7:], 0.2)
 
 
-def test_aligned_initial_configuration_matches_temporary_manual_pose_when_bioptim_is_available(tmp_path: Path) -> None:
-    """The exported-model helper should return the temporary manual initial pose."""
+def test_aligned_initial_configuration_nulls_com_x_when_bioptim_is_available(tmp_path: Path) -> None:
+    """The exported-model Jacobian alignment should bring the CoM horizontal position to zero."""
 
     pytest.importorskip("bioptim")
     pytest.importorskip("biorbd_casadi")
+    from casadi import DM
+    from bioptim import BiorbdModel
     settings = VerticalJumpOcpSettings(
         athlete_mass_kg=50.0,
         contact_model=CONTACT_MODEL_NO_PLATFORM,
@@ -266,13 +268,16 @@ def test_aligned_initial_configuration_matches_temporary_manual_pose_when_biopti
     model_path = builder.export_model(tmp_path)
 
     aligned_q = np.asarray(builder.aligned_initial_joint_configuration_rad(model_path=model_path), dtype=float)
-    assert aligned_q[0] == pytest.approx(np.deg2rad(30.0))
-    assert aligned_q[1] == pytest.approx(-np.pi / 2.0)
-    assert aligned_q[2] == pytest.approx(np.pi / 2.0)
+    com = np.asarray(
+        BiorbdModel(str(model_path)).center_of_mass()(DM(aligned_q.reshape((-1, 1))), DM()),
+        dtype=float,
+    ).reshape((-1,))
+
+    assert com[0] == pytest.approx(0.0, abs=1e-8)
 
 
 def test_aligned_initial_configuration_keeps_knee_and_hip_flexion_when_bioptim_is_available(tmp_path: Path) -> None:
-    """The exported-model helper should keep the requested temporary knee/hip pose."""
+    """The exported-model alignment should only adjust the ankle-equivalent angle."""
 
     pytest.importorskip("bioptim")
     pytest.importorskip("biorbd_casadi")
@@ -286,8 +291,8 @@ def test_aligned_initial_configuration_keeps_knee_and_hip_flexion_when_bioptim_i
 
     aligned_q = np.asarray(builder.aligned_initial_joint_configuration_rad(model_path=model_path), dtype=float)
 
-    assert aligned_q[1] == pytest.approx(-np.pi / 2.0)
-    assert aligned_q[2] == pytest.approx(np.pi / 2.0)
+    assert aligned_q[1] == pytest.approx(-np.deg2rad(100.0))
+    assert aligned_q[2] == pytest.approx(np.deg2rad(100.0))
 
 
 

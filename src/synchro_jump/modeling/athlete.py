@@ -59,4 +59,4 @@ class AthleteMorphology:
     def initial_joint_flexion_deg(self) -> float:
         """Return the default initial hip and knee flexion angle."""
 
-        return 90.0
+        return 100.0

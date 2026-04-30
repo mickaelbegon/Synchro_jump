@@ -212,7 +212,8 @@ def _static_control_target_for_first_interval(
     """Return the first control target enforcing static equilibrium at the initial posture."""
 
     full_static_torque = static_equilibrium_torque(model, np.asarray(initial_q, dtype=float))
-    target = np.asarray(full_static_torque[model.nb_root :], dtype=float).reshape((-1, 1))
+    configured_root_count = model.nb_root if _uses_platform_states(settings.contact_model) else 0
+    target = np.asarray(full_static_torque[configured_root_count:], dtype=float).reshape((-1, 1))
     if settings.contact_model == CONTACT_MODEL_NO_PLATFORM and target.shape[0] > 0:
         target[0, 0] = 0.0
     return target
@@ -373,18 +374,24 @@ def _controller_q_qdot_tau(controller):
 
     if "q" in states:
         q = states["q"].cx
+    elif "q_roots" not in states and "q_joints" in states:
+        q = states["q_joints"].cx
     else:
         q_roots = states["q_roots"].cx if "q_roots" in states else cx.zeros(model.nb_root, 1)
         q = vertcat(q_roots, states["q_joints"].cx)
 
     if "qdot" in states:
         qdot = states["qdot"].cx
+    elif "qdot_roots" not in states and "qdot_joints" in states:
+        qdot = states["qdot_joints"].cx
     else:
         qdot_roots = states["qdot_roots"].cx if "qdot_roots" in states else cx.zeros(model.nb_root, 1)
         qdot = vertcat(qdot_roots, states["qdot_joints"].cx)
 
     if "tau" in controls:
         tau = controls["tau"].cx
+    elif "q_roots" not in states and "tau_joints" in controls:
+        tau = controls["tau_joints"].cx
     else:
         tau = vertcat(cx.zeros(model.nb_root, 1), controls["tau_joints"].cx)
 
@@ -1074,11 +1081,26 @@ class VerticalJumpBioptimOcpBuilder:
         tolerance: float = 1e-10,
         max_iterations: int = 25,
     ) -> tuple[float, ...]:
-        """Return the temporary manually imposed initial posture."""
+        """Return one initial posture aligned on the true exported-model CoM.
 
-        _ = (model_path, tolerance, max_iterations)
+        The equilibrium search starts from q_deg = [30, -100, 100] on the three
+        rotational coordinates and only corrects the ankle-equivalent angle.
+        """
+
+        from bioptim import BiorbdModel
+
+        model_filepath = Path(model_path) if model_path is not None else self.export_model(Path.cwd() / "generated")
         model_definition = _model_definition_from_settings(self.settings)
-        return tuple(float(value) for value in model_definition.crouched_joint_configuration_rad)
+        initial_q = model_definition.crouched_joint_configuration_rad
+        ankle_rotation_index = 2 if _floating_base_for_contact_model(self.settings.contact_model) else 0
+        aligned_q = _align_configuration_to_zero_com_x(
+            BiorbdModel(str(model_filepath)),
+            initial_q,
+            optimized_dof_indices=(ankle_rotation_index,),
+            tolerance=tolerance,
+            max_iterations=max_iterations,
+        )
+        return tuple(float(value) for value in aligned_q)
 
     def build_ocp(
         self,
@@ -1311,6 +1333,8 @@ class VerticalJumpBioptimOcpBuilder:
                 **(explicit_platform_kwargs if uses_platform_states else {}),
             )
 
+        configured_root_count = bio_model.nb_root if uses_platform_states else 0
+
         q_bounds = bio_model.bounds_from_ranges("q")
         qdot_bounds = bio_model.bounds_from_ranges("qdot")
         q_min = q_bounds.min[:, 0]
@@ -1320,30 +1344,30 @@ class VerticalJumpBioptimOcpBuilder:
 
         x_bounds = BoundsList()
         q_roots_bounds = _constant_bounds_with_fixed_start(
-            q_min[: bio_model.nb_root],
-            q_max[: bio_model.nb_root],
-            initial_q[: bio_model.nb_root],
+            q_min[:configured_root_count],
+            q_max[:configured_root_count],
+            initial_q[:configured_root_count],
         )
         q_joints_bounds = _constant_bounds_with_fixed_start(
-            q_min[bio_model.nb_root :],
-            q_max[bio_model.nb_root :],
-            initial_q[bio_model.nb_root :],
+            q_min[configured_root_count:],
+            q_max[configured_root_count:],
+            initial_q[configured_root_count:],
         )
         qdot_roots_bounds = _constant_bounds_with_fixed_start(
-            qdot_min[: bio_model.nb_root],
-            qdot_max[: bio_model.nb_root],
-            initial_qdot[: bio_model.nb_root],
+            qdot_min[:configured_root_count],
+            qdot_max[:configured_root_count],
+            initial_qdot[:configured_root_count],
         )
         qdot_joints_bounds = _constant_bounds_with_fixed_start(
-            qdot_min[bio_model.nb_root :],
-            qdot_max[bio_model.nb_root :],
-            initial_qdot[bio_model.nb_root :],
+            qdot_min[configured_root_count:],
+            qdot_max[configured_root_count:],
+            initial_qdot[configured_root_count:],
         )
         if uses_platform_states:
             platform_position_bounds = _constant_bounds_with_fixed_start([-0.2], [2.5], [0.0])
             platform_velocity_bounds = _constant_bounds_with_fixed_start([-10.0], [10.0], [0.0])
 
-        if bio_model.nb_root:
+        if configured_root_count:
             x_bounds.add(
                 "q_roots",
                 min_bound=q_roots_bounds[0],
@@ -1356,7 +1380,7 @@ class VerticalJumpBioptimOcpBuilder:
             max_bound=q_joints_bounds[1],
             interpolation=InterpolationType.CONSTANT_WITH_FIRST_AND_LAST_DIFFERENT,
         )
-        if bio_model.nb_root:
+        if configured_root_count:
             x_bounds.add(
                 "qdot_roots",
                 min_bound=qdot_roots_bounds[0],
@@ -1384,26 +1408,26 @@ class VerticalJumpBioptimOcpBuilder:
             )
 
         x_init = InitialGuessList()
-        if bio_model.nb_root:
+        if configured_root_count:
             x_init.add(
                 "q_roots",
-                initial_guess.q[: bio_model.nb_root, :],
+                initial_guess.q[:configured_root_count, :],
                 interpolation=InterpolationType.EACH_FRAME,
             )
         x_init.add(
             "q_joints",
-            initial_guess.q[bio_model.nb_root :, :],
+            initial_guess.q[configured_root_count:, :],
             interpolation=InterpolationType.EACH_FRAME,
         )
-        if bio_model.nb_root:
+        if configured_root_count:
             x_init.add(
                 "qdot_roots",
-                initial_guess.qdot[: bio_model.nb_root, :],
+                initial_guess.qdot[:configured_root_count, :],
                 interpolation=InterpolationType.EACH_FRAME,
             )
         x_init.add(
             "qdot_joints",
-            initial_guess.qdot[bio_model.nb_root :, :],
+            initial_guess.qdot[configured_root_count:, :],
             interpolation=InterpolationType.EACH_FRAME,
         )
         if uses_platform_states:
@@ -1418,7 +1442,7 @@ class VerticalJumpBioptimOcpBuilder:
                 interpolation=InterpolationType.EACH_FRAME,
             )
 
-        n_joint_tau = bio_model.nb_q - bio_model.nb_root
+        n_joint_tau = bio_model.nb_q - configured_root_count
         u_bounds = BoundsList()
         tau_min_bounds = [self.settings.tau_min_nm] * n_joint_tau
         tau_max_bounds = [self.settings.tau_max_nm] * n_joint_tau
@@ -1438,7 +1462,7 @@ class VerticalJumpBioptimOcpBuilder:
         u_bounds["tau_joints"] = tau_min_bounds, tau_max_bounds
 
         u_init = InitialGuessList()
-        tau_initial_guess = np.asarray(initial_guess.tau[bio_model.nb_root :, :], dtype=float).copy()
+        tau_initial_guess = np.asarray(initial_guess.tau[configured_root_count:, :], dtype=float).copy()
         if self.settings.contact_model == CONTACT_MODEL_NO_PLATFORM and tau_initial_guess.shape[0] > 0:
             tau_initial_guess[0, :] = 0.0
         u_init.add(

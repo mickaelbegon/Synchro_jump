@@ -34,7 +34,7 @@ def test_biomod_text_limits_knee_range_to_avoid_hyperextension() -> None:
 
     biomod_text = PlanarJumperModelDefinition().to_biomod_text()
 
-    assert "\t\t0.000000\t2.792527\n" in biomod_text
+    assert "\t\t-2.792527\t0.000000\n" in biomod_text
 
 
 def test_biomod_text_places_child_segments_at_parent_endpoints() -> None:
@@ -48,26 +48,28 @@ def test_biomod_text_places_child_segments_at_parent_endpoints() -> None:
     assert "\t\t0.000000\t0.000000\t1.000000\t0.392000\n" in biomod_text
 
 
-def test_initial_configuration_matches_temporary_manual_pose() -> None:
-    """The temporary initial posture should use the manually imposed rotations."""
+def test_initial_configuration_aligns_center_of_mass_over_ankle() -> None:
+    """The initial posture should place the CoM above the ankle contact."""
 
     model_definition = PlanarJumperModelDefinition(AthleteMorphology(height_m=1.60, mass_kg=50.0))
 
     q_init = model_definition.initial_joint_configuration_rad
-    assert q_init[2] == pytest.approx(math.radians(30.0))
-    assert q_init[3] == pytest.approx(-math.pi / 2.0)
-    assert q_init[4] == pytest.approx(math.pi / 2.0)
+    center_of_mass_x, _ = model_definition.center_of_mass_position(q_init)
+
+    assert center_of_mass_x == pytest.approx(q_init[0], abs=1e-8)
 
 
 def test_initial_alignment_keeps_requested_knee_and_hip_flexion() -> None:
-    """The temporary initial posture should be returned unchanged."""
+    """The CoM alignment should primarily adjust the ankle-equivalent rotation."""
 
     model_definition = PlanarJumperModelDefinition(AthleteMorphology(height_m=1.60, mass_kg=50.0))
 
     q_crouched = model_definition.crouched_joint_configuration_rad
     q_aligned = model_definition.initial_joint_configuration_rad
 
-    assert q_aligned == pytest.approx(q_crouched)
+    assert q_aligned[2] != pytest.approx(q_crouched[2])
+    assert q_aligned[3] == pytest.approx(-math.radians(100.0))
+    assert q_aligned[4] == pytest.approx(math.radians(100.0))
 
 
 def test_no_platform_model_definition_exposes_three_dofs_and_no_contact() -> None:
@@ -122,5 +124,5 @@ def test_joint_range_properties_expose_non_hyperextending_knee_bounds() -> None:
 
     model_definition = PlanarJumperModelDefinition(AthleteMorphology(height_m=1.60, mass_kg=50.0))
 
-    assert model_definition.knee_rotation_bounds_rad == pytest.approx((0.0, math.radians(160.0)))
-    assert model_definition.hip_rotation_bounds_rad == pytest.approx((math.radians(-150.0), math.radians(60.0)))
+    assert model_definition.knee_rotation_bounds_rad == pytest.approx((-math.radians(160.0), 0.0))
+    assert model_definition.hip_rotation_bounds_rad == pytest.approx((math.radians(-60.0), math.radians(150.0)))
