@@ -57,12 +57,13 @@ def _require_panda3d():
     try:
         from direct.showbase.ShowBase import ShowBase  # type: ignore
         from panda3d.core import AmbientLight, DirectionalLight, WindowProperties, loadPrcFileData  # type: ignore
+        from panda3d_gltf import gltf  # type: ignore
     except Exception as exc:  # pragma: no cover - optional dependency
         raise AvatarViewerDependencyError(
             "Panda3D dependencies are missing. Install `panda3d` and `panda3d-gltf` "
             "alongside `PySide6` to enable the 3D avatar viewer."
         ) from exc
-    return ShowBase, AmbientLight, DirectionalLight, WindowProperties, loadPrcFileData
+    return ShowBase, AmbientLight, DirectionalLight, WindowProperties, loadPrcFileData, gltf
 
 
 @dataclass(frozen=True)
@@ -81,12 +82,14 @@ class _EmbeddedPandaApp:
     """Own the Panda3D scene embedded in a Qt native widget."""
 
     def __init__(self, parent_window_id: int, width: int, height: int, config: AvatarViewerConfig) -> None:
-        ShowBase, AmbientLight, DirectionalLight, WindowProperties, loadPrcFileData = _require_panda3d()
+        ShowBase, AmbientLight, DirectionalLight, WindowProperties, loadPrcFileData, gltf = _require_panda3d()
 
         loadPrcFileData("", "window-type none")
         loadPrcFileData("", "audio-library-name null")
         loadPrcFileData("", "sync-video false")
         self._show_base = ShowBase(windowType="none")
+        # `panda3d-gltf` registers GLB/GLTF loading on Panda's model loader.
+        gltf.patch_loader(self._show_base.loader)
         properties = WindowProperties()
         properties.setParentWindow(parent_window_id)
         properties.setSize(max(width, 1), max(height, 1))
@@ -117,7 +120,7 @@ class _EmbeddedPandaApp:
     def resize(self, width: int, height: int) -> None:
         """Resize the embedded Panda window."""
 
-        _ShowBase, _AmbientLight, _DirectionalLight, WindowProperties, _loadPrcFileData = _require_panda3d()
+        _ShowBase, _AmbientLight, _DirectionalLight, WindowProperties, _loadPrcFileData, _gltf = _require_panda3d()
         props = WindowProperties()
         props.setSize(max(width, 1), max(height, 1))
         self._show_base.win.requestProperties(props)
