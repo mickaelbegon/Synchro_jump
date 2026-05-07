@@ -15,4 +15,4 @@ dependencies:
   - isort>=5.13
   - flake8>=7.0
   - pip:
-      - -e .[gui,opt,test]
+      - -e .[gui,opt,test,avatar3d]
