@@ -4,3 +4,5 @@ __pycache__/
 .DS_Store
 generated/
 *.egg-info/
+bioptim_pr/
+bioptim_pr_master/

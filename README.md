@@ -37,3 +37,35 @@ python -m pip install -e .[test,opt,gui]
 ```bash
 PYTHONPATH=src python -m synchro_jump
 ```
+
+## Prototype Avatar 3D
+
+Le prototype 3D est volontairement isole du reste du projet pour ne pas casser
+la GUI actuelle en Tk. Il vit dans :
+
+- [src/synchro_jump/avatar_viewer](/Users/mickaelbegon/Documents/Synchro_jump/src/synchro_jump/avatar_viewer)
+- [examples/run_avatar_gui.py](/Users/mickaelbegon/Documents/Synchro_jump/examples/run_avatar_gui.py)
+
+Dependances optionnelles :
+
+```bash
+python -m pip install -e .[avatar3d]
+```
+
+Lancer l'inspection du rig uniquement :
+
+```bash
+PYTHONPATH=src python examples/run_avatar_gui.py --inspect-only
+```
+
+Lancer le prototype Qt + Panda3D :
+
+```bash
+PYTHONPATH=src python examples/run_avatar_gui.py
+```
+
+Limitations actuelles :
+
+- le viewer 3D est optionnel et non connecte a la GUI Tk principale pour l'instant
+- le mapping pilote surtout la racine et le dos ; les bras et les jambes restent fixes au pose de repos
+- les corrections d'axes par os sont prevues dans l'architecture, mais demandent encore une validation visuelle sur le rig cible

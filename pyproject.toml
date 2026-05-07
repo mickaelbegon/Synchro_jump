@@ -23,6 +23,12 @@ gui = [
     "numpy>=1.25",
     "Pillow>=10.0",
 ]
+avatar3d = [
+    "numpy>=1.25",
+    "PySide6>=6.7",
+    "panda3d>=1.10.15",
+    "panda3d-gltf>=1.2.1",
+]
 opt = [
     "numpy>=1.25",
     "casadi>=3.6",
